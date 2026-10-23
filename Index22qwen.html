@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CityRT Lite Prototype</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Segoe UI', sans-serif; background: #1a1a1a; }
+        #canvas-container { width: 100vw; height: 100vh; }
+        
+        /* UI Панель инструментов */
+        #ui-panel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(30, 30, 30, 0.9);
+            padding: 15px;
+            border-radius: 12px;
+            color: white;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1);
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }
+        .tool-btn {
+            display: block;
+            width: 100%;
+            padding: 10px 15px;
+            margin-bottom: 8px;
+            background: #333;
+            border: 1px solid #555;
+            color: white;
+            border-radius: 6px;
+            cursor: pointer;
+            text-align: left;
+            transition: all 0.2s;
+            font-size: 14px;
+        }
+        .tool-btn:hover { background: #444; }
+        .tool-btn.active {
+            background: #3b82f6;
+            border-color: #60a5fa;
+            font-weight: bold;
+        }
+        .instructions {
+            margin-top: 15px;
+            font-size: 12px;
+            color: #aaa;
+            line-height: 1.4;
+        }
+        #stats {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            color: white;
+            background: rgba(0,0,0,0.5);
+            padding: 10px;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+
+<div id="ui-panel">
+    <h3 style="margin-top:0">Инструменты</h3>
+    <button class="tool-btn active" onclick="setTool('road')">🛣️ Дорога</button>
+    <button class="tool-btn" onclick="setTool('house')">🏠 Жилой дом</button>
+    <button class="tool-btn" onclick="setTool('hospital')">🏥 Больница</button>
+    <div class="instructions">
+        • ЛКМ: Построить<br>
+        • ПКМ + drag: Вращать камеру<br>
+        • Колесо: Приблизить/Отдалить<br>
+        • Красный призрак = занято
+    </div>
+</div>
+
+<div id="stats">Построек: <span id="build-count">0</span></div>
+<div id="canvas-container"></div>
+
+<!-- Подключаем Three.js через CDN (ES Modules) -->
+<script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+</script>
+
+<script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    // --- 1. Инициализация сцены ---
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x87CEEB); // Небо
+    scene.fog = new THREE.Fog(0x87CEEB, 20, 50);
+
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(15, 15, 15);
+    camera.lookAt(0, 0, 0);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+    // --- 2. Освещение ---
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambientLight);
+
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    dirLight.position.set(10, 20, 10);
+    dirLight.castShadow = true;
+    dirLight.shadow.mapSize.width = 2048;
+    dirLight.shadow.mapSize.height = 2048;
+    scene.add(dirLight);
+
+    // --- 3. Окружение и Сетка ---
+    // Плоскость для рейкастинга (невидимая, но физически присутствующая)
+    const planeGeometry = new THREE.PlaneGeometry(20, 20);
+    const planeMaterial = new THREE.MeshStandardMaterial({ color: 0x3a7e46 }); // Трава
+    const ground = new THREE.Mesh(planeGeometry, planeMaterial);
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    // Визуальная сетка
+    const gridHelper = new THREE.GridHelper(20, 20, 0x000000, 0x000000);
+    gridHelper.material.opacity = 0.2;
+    gridHelper.material.transparent = true;
+    gridHelper.position.y = 0.01; // Чуть выше земли, чтобы не мерцало (z-fighting)
+    scene.add(gridHelper);
+
+    // --- 4. Управление камерой ---
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+    controls.maxPolarAngle = Math.PI / 2 - 0.1; // Не даем камере уйти под землю
+
+    // --- 5. Игровая логика и Состояние ---
+    let currentTool = 'road';
+    const occupiedCells = new Set(); // Хранит строки "x,z" занятых клеток
+    let buildCount = 0;
+
+    // Геометрии и материалы для инструментов (переиспользуем для производительности)
+    const geometries = {
+        road: new THREE.BoxGeometry(1, 0.1, 1),
+        house: new THREE.BoxGeometry(0.8, 0.8, 0.8),
+        hospital: new THREE.BoxGeometry(0.9, 1.2, 0.9)
+    };
+
+    const materials = {
+        road: new THREE.MeshStandardMaterial({ color: 0x555555 }),
+        house: new THREE.MeshStandardMaterial({ color: 0xe67e22 }),
+        hospital: new THREE.MeshStandardMaterial({ color: 0xffffff }),
+        ghostValid: new THREE.MeshStandardMaterial({ color: 0x3b82f6, transparent: true, opacity: 0.5 }),
+        ghostInvalid: new THREE.MeshStandardMaterial({ color: 0xef4444, transparent: true, opacity: 0.5 })
+    };
+
+    // Призрак (превью) объекта
+    const ghostMesh = new THREE.Mesh(geometries.road, materials.ghostValid);
+    ghostMesh.position.y = 0.05;
+    scene.add(ghostMesh);
+
+    // --- 6. Рейкастинг и Взаимодействие ---
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+    let targetX = 0;
+    let targetZ = 0;
+    let isValidPlacement = false;
+
+    function updateGhost() {
+        // Обновляем геометрию призрака в зависимости от инструмента
+        ghostMesh.geometry = geometries[currentTool];
+        
+        // Выравниваем по сетке (Snap to grid)
+        // Добавляем 0.5, если центр клетки должен быть на целых координатах, 
+        // но для простоты здесь сетка от -10 до 10, центр клетки на целых числах.
+        ghostMesh.position.x = Math.round(targetX);
+        ghostMesh.position.z = Math.round(targetZ);
+        
+        // Высота призрака зависит от типа
+        if (currentTool === 'road') ghostMesh.position.y = 0.05;
+        else if (currentTool === 'house') ghostMesh.position.y = 0.4;
+        else if (currentTool === 'hospital') ghostMesh.position.y = 0.6;
+
+        // Проверка на занятость клетки
+        const cellKey = `${ghostMesh.position.x},${ghostMesh.position.z}`;
+        isValidPlacement = !occupiedCells.has(cellKey);
+
+        // Визуальная обратная связь
+        ghostMesh.material = isValidPlacement ? materials.ghostValid : materials.ghostInvalid;
+    }
+
+    window.addEventListener('mousemove', (event) => {
+        mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+        mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+        raycaster.setFromCamera(mouse, camera);
+        const intersects = raycaster.intersectObject(ground);
+
+        if (intersects.length > 0) {
+            targetX = intersects[0].point.x;
+            targetZ = intersects[0].point.z;
+            updateGhost();
+        }
+    });
+
+    window.addEventListener('mousedown', (event) => {
+        if (event.button !== 0) return; // Только левая кнопка мыши
+        if (!isValidPlacement) return;
+
+        // Создаем реальный объект
+        const mesh = new THREE.Mesh(geometries[currentTool], materials[currentTool]);
+        mesh.position.copy(ghostMesh.position);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        
+        // Добавляем деталь для больницы (красный крест)
+        if (currentTool === 'hospital') {
+            const crossV = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.8, 0.1), new THREE.MeshStandardMaterial({color: 0xff0000}));
+            crossV.position.set(0, 0, 0.46);
+            mesh.add(crossV);
+            const crossH = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.2, 0.1), new THREE.MeshStandardMaterial({color: 0xff0000}));
+            crossH.position.set(0, 0, 0.46);
+            mesh.add(crossH);
+        }
+
+        scene.add(mesh);
+        
+        // Регистрируем занятую клетку
+        occupiedCells.add(`${mesh.position.x},${mesh.position.z}`);
+        
+        // Обновляем UI
+        buildCount++;
+        document.getElementById('build-count').innerText = buildCount;
+    });
+
+    // --- 7. Глобальные функции для UI ---
+    window.setTool = function(tool) {
+        currentTool = tool;
+        // Обновляем активный класс кнопок
+        document.querySelectorAll('.tool-btn').forEach(btn => btn.classList.remove('active'));
+        event.target.classList.add('active');
+        updateGhost();
+    };
+
+    // --- 8. Анимационный цикл ---
+    function animate() {
+        requestAnimationFrame(animate);
+        controls.update();
+        renderer.render(scene, camera);
+    }
+
+    // Обработка изменения размера окна
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    animate();
+</script>
+</body>
+</html>
