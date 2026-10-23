@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>CityRT — 3D прототип</title>
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;overflow:hidden;font-family:system-ui,Segoe UI,Roboto,sans-serif;background:#1b2320;color:#e8f0ea}
+  canvas{display:block}
+  #ui{position:fixed;top:16px;left:16px;width:240px;z-index:10;display:flex;flex-direction:column;gap:8px;pointer-events:none}
+  #ui > *{pointer-events:auto}
+  .stat{background:rgba(38,48,44,.9);backdrop-filter:blur(8px);border-radius:10px;padding:10px 12px;font-size:13px;color:#9fb3a8}
+  .stat b{display:block;font-size:22px;color:#e8f0ea}
+  .stat.small b{display:inline;font-size:13px}
+  .tools{display:flex;flex-direction:column;gap:6px}
+  button{cursor:pointer;background:rgba(47,61,55,.9);backdrop-filter:blur(8px);border:2px solid transparent;color:#e8f0ea;padding:10px;border-radius:10px;text-align:left;font-size:14px;font-family:inherit}
+  button:hover{background:rgba(58,74,67,.95)}
+  button.active{border-color:#5fd08a;background:rgba(53,71,62,.95)}
+  .hint{font-size:12px;color:#8fa89b;line-height:1.45;background:rgba(38,48,44,.7);padding:8px 10px;border-radius:8px}
+  #log{font-size:12px;color:#9fb3a8;display:flex;flex-direction:column;gap:3px}
+</style>
+</head>
+<body>
+<div id="ui">
+  <div class="stat">Бюджет<b id="money">1000 ₡</b></div>
+  <div class="stat">Доход за тик<b id="income">0 ₡</b></div>
+  <div class="stat small">Поездок: <b id="trips">0</b> · Машин: <b id="cars">0</b></div>
+  <div class="tools" id="tools"></div>
+  <div class="hint">ЛКМ — строить · ЛКМ+тянуть — линия<br>ПКМ — вращение · колесо — зум · 1–4 — инструменты</div>
+  <div id="log"></div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ================= Игровое состояние (без изменений) ================= */
+const TILE = 2, COLS = 20, ROWS = 15;
+const COST = { road: 10, house: 120, school: 250 };
+const TOOLS = [
+  { id: 'road',     name: '🛣  Дорога', cost: COST.road },
+  { id: 'house',    name: '🏠  Дом',    cost: COST.house },
+  { id: 'school',   name: '🏫  Школа',  cost: COST.school },
+  { id: 'bulldoze', name: '💣  Снести', cost: 0 },
+];
+const DIRS = [[1,0],[-1,0],[0,1],[0,-1]];
+const SPEED = 2.5;
+
+const grid = new Array(COLS * ROWS).fill(null);
+const idx = (x, y) => y * COLS + x;
+const inBounds = (x, y) => x >= 0 && y >= 0 && x < COLS && y < ROWS;
+
+let money = 1000, income = 0;
+let tool = 'road', dragging = false, lastTile = null;
+let cars = [], tickAcc = 0, carAcc = 0, trips = 0;
+
+/* ================= Сцена ================= */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1b2320);
+scene.fog = new THREE.Fog(0x1b2320, 55, 110);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(24, 28, 24);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0, 0);
+controls.maxPolarAngle = Math.PI / 2.2;
+controls.minDistance = 10;
+controls.maxDistance = 60;
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+// ЛКМ отдаём игре, вращение — на ПКМ
+controls.mouseButtons = {
+  LEFT: null,
+  MIDDLE: THREE.MOUSE.PAN,
+  RIGHT: THREE.MOUSE.ROTATE,
+};
+
+/* ================= Свет ================= */
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+
+const sun = new THREE.DirectionalLight(0xffffff, 1.1);
+sun.position.set(18, 28, 12);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+const SH = 30;
+sun.shadow.camera.left = -SH; sun.shadow.camera.right = SH;
+sun.shadow.camera.top  =  SH; sun.shadow.camera.bottom = -SH;
+sun.shadow.camera.near = 1;   sun.shadow.camera.far = 80;
+sun.shadow.bias = -0.0005;
+scene.add(sun);
+
+/* ================= Земля и сетка ================= */
+const groundSize = Math.max(COLS, ROWS) * TILE + 20;
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(groundSize, groundSize),
+  new THREE.MeshLambertMaterial({ color: 0x28342f })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -0.02;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// одна геометрия всех линий сетки — очень дёшево
+const gridPositions = [];
+const halfW = COLS * TILE / 2, halfH = ROWS * TILE / 2;
+for (let x = 0; x <= COLS; x++) {
+  const wx = -halfW + x * TILE;
+  gridPositions.push(wx, 0.005, -halfH, wx, 0.005, halfH);
+}
+for (let y = 0; y <= ROWS; y++) {
+  const wz = -halfH + y * TILE;
+  gridPositions.push(-halfW, 0.005, wz, halfW, 0.005, wz);
+}
+const gridGeo = new THREE.BufferGeometry();
+gridGeo.setAttribute('position', new THREE.Float32BufferAttribute(gridPositions, 3));
+scene.add(new THREE.LineSegments(gridGeo,
+  new THREE.LineBasicMaterial({ color: 0x3f5550, transparent: true, opacity: 0.5 })));
+
+/* ================= Подсветка тайла под курсором ================= */
+const highlight = new THREE.Mesh(
+  new THREE.PlaneGeometry(TILE, TILE),
+  new THREE.MeshBasicMaterial({ color: 0x5fd08a, transparent: true, opacity: 0.35, depthWrite: false })
+);
+highlight.rotation.x = -Math.PI / 2;
+highlight.position.y = 0.04;
+highlight.visible = false;
+scene.add(highlight);
+
+/* ================= Материалы (общие) ================= */
+const MAT = {
+  road:   new THREE.MeshLambertMaterial({ color: 0x4b5257 }),
+  lane:   new THREE.MeshBasicMaterial({ color: 0xd9d16a }),
+  house:  new THREE.MeshLambertMaterial({ color: 0xc46a45 }),
+  roof:   new THREE.MeshLambertMaterial({ color: 0x8e4b2f }),
+  school: new THREE.MeshLambertMaterial({ color: 0x4a7fc9 }),
+  window: new THREE.MeshBasicMaterial({ color: 0xffe9b0 }),
+};
+
+/* ================= Координатные утилиты ================= */
+function tileToWorld(x, y) {
+  return new THREE.Vector3((x - COLS / 2 + 0.5) * TILE, 0, (y - ROWS / 2 + 0.5) * TILE);
+}
+function worldToTile(p) {
+  const x = Math.floor(p.x / TILE + COLS / 2);
+  const y = Math.floor(p.z / TILE + ROWS / 2);
+  return inBounds(x, y) ? { x, y } : null;
+}
+
+/* ================= Меши тайлов ================= */
+const tileMeshes = new Map();
+
+function removeTileMesh(x, y) {
+  const i = idx(x, y);
+  const m = tileMeshes.get(i);
+  if (!m) return;
+  scene.remove(m);
+  m.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+  tileMeshes.delete(i);
+}
+
+function buildTileMesh(type, x, y) {
+  const group = new THREE.Group();
+  group.position.copy(tileToWorld(x, y));
+
+  if (type === 'road') {
+    const road = new THREE.Mesh(new THREE.PlaneGeometry(TILE, TILE), MAT.road);
+    road.rotation.x = -Math.PI / 2;
+    road.position.y = 0.02;
+    road.receiveShadow = true;
+    group.add(road);
+
+    const l = inBounds(x-1,y) && grid[idx(x-1,y)] === 'road';
+    const r = inBounds(x+1,y) && grid[idx(x+1,y)] === 'road';
+    const u = inBounds(x,y-1) && grid[idx(x,y-1)] === 'road';
+    const d = inBounds(x,y+1) && grid[idx(x,y+1)] === 'road';
+
+    if (l && r) {
+      const line = new THREE.Mesh(new THREE.BoxGeometry(TILE, 0.03, 0.12), MAT.lane);
+      line.position.y = 0.04;
+      group.add(line);
+    }
+    if (u && d) {
+      const line = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.03, TILE), MAT.lane);
+      line.position.y = 0.04;
+      group.add(line);
+    }
+  } else if (type === 'house') {
+    const body = new THREE.Mesh(new THREE.BoxGeometry(TILE*0.7, TILE*0.7, TILE*0.7), MAT.house);
+    body.position.y = TILE*0.35;
+    body.castShadow = body.receiveShadow = true;
+    group.add(body);
+
+    const roof = new THREE.Mesh(new THREE.ConeGeometry(TILE*0.5, TILE*0.45, 4), MAT.roof);
+    roof.position.y = TILE*0.7 + TILE*0.225;
+    roof.rotation.y = Math.PI / 4;
+    roof.castShadow = true;
+    group.add(roof);
+
+    const win = new THREE.Mesh(new THREE.PlaneGeometry(TILE*0.2, TILE*0.25), MAT.window);
+    win.position.set(0, TILE*0.35, TILE*0.351);
+    group.add(win);
+  } else if (type === 'school') {
+    const body = new THREE.Mesh(new THREE.BoxGeometry(TILE*0.85, TILE*0.6, TILE*0.85), MAT.school);
+    body.position.y = TILE*0.3;
+    body.castShadow = body.receiveShadow = true;
+    group.add(body);
+    for (let i = 0; i < 3; i++) {
+      const win = new THREE.Mesh(new THREE.PlaneGeometry(TILE*0.15, TILE*0.15), MAT.window);
+      win.position.set((i - 1) * TILE*0.22, TILE*0.35, TILE*0.426);
+      group.add(win);
+    }
+  }
+  scene.add(group);
+  tileMeshes.set(idx(x, y), group);
+}
+
+function rebuildRoadNeighbors(x, y) {
+  removeTileMesh(x, y);
+  if (grid[idx(x, y)] === 'road') buildTileMesh('road', x, y);
+  for (const [dx, dy] of DIRS) {
+    const nx = x+dx, ny = y+dy;
+    if (inBounds(nx, ny) && grid[idx(nx, ny)] === 'road') {
+      removeTileMesh(nx, ny);
+      buildTileMesh('road', nx, ny);
+    }
+  }
+}
+
+/* ================= Игровая логика (без изменений) ================= */
+function hasRoadAccess(x, y) {
+  return DIRS.some(([dx, dy]) => {
+    const nx = x+dx, ny = y+dy;
+    return inBounds(nx, ny) && grid[idx(nx, ny)] === 'road';
+  });
+}
+function buildingRoadTile(b) {
+  for (const [dx, dy] of DIRS) {
+    const nx = b.x+dx, ny = b.y+dy;
+    if (inBounds(nx, ny) && grid[idx(nx, ny)] === 'road') return { x: nx, y: ny };
+  }
+  return null;
+}
+
+function aStar(start, goal) {
+  if (start.x === goal.x && start.y === goal.y) return [{ x: start.x, y: start.y }];
+  if (!inBounds(start.x, start.y) || !inBounds(goal.x, goal.y)) return null;
+  if (grid[idx(start.x, start.y)] !== 'road' || grid[idx(goal.x, goal.y)] !== 'road') return null;
+
+  const k = (x, y) => y * COLS + x;
+  const h = (x, y) => Math.abs(x - goal.x) + Math.abs(y - goal.y);
+  const gScore = new Map(), cameFrom = new Map(), closed = new Set(), open = new Map();
+  const startK = k(start.x, start.y);
+  gScore.set(startK, 0);
+  open.set(startK, { x: start.x, y: start.y, f: h(start.x, start.y) });
+
+  while (open.size) {
+    let bk = -1, bf = Infinity;
+    for (const [kk, n] of open) if (n.f < bf) { bf = n.f; bk = kk; }
+    const cur = open.get(bk); open.delete(bk);
+
+    if (cur.x === goal.x && cur.y === goal.y) {
+      const path = []; let ck = bk;
+      while (ck !== undefined) {
+        path.push({ x: ck % COLS, y: Math.floor(ck / COLS) });
+        ck = cameFrom.get(ck);
+      }
+      return path.reverse();
+    }
+    closed.add(bk);
+    const g = gScore.get(bk);
+    for (const [dx, dy] of DIRS) {
+      const nx = cur.x+dx, ny = cur.y+dy;
+      if (!inBounds(nx, ny) || grid[idx(nx, ny)] !== 'road') continue;
+      const nk = k(nx, ny);
+      if (closed.has(nk)) continue;
+      const tg = g + 1;
+      if (tg < (gScore.get(nk) ?? Infinity)) {
+        gScore.set(nk, tg); cameFrom.set(nk, bk);
+        open.set(nk, { x: nx, y: ny, f: tg + h(nx, ny) });
+      }
+    }
+  }
+  return null;
+}
+
+function weightedBuildings() {
+  const list = [];
+  for (let y = 0; y < ROWS; y++)
+    for (let x = 0; x < COLS; x++) {
+      const t = grid[idx(x, y)];
+      if (!hasRoadAccess(x, y)) continue;
+      if (t === 'house') for (let i = 0; i < 3; i++) list.push({ x, y });
+      else if (t === 'school') list.push({ x, y });
+    }
+  return list;
+}
+
+function place(x, y) {
+  if (!inBounds(x, y)) return;
+  const i = idx(x, y), cur = grid[i];
+
+  if (tool === 'bulldoze') {
+    if (!cur) return;
+    money += Math.floor(COST[cur] * 0.5);
+    grid[i] = null;
+    removeTileMesh(x, y);
+    for (const [dx, dy] of DIRS) {
+      const nx = x+dx, ny = y+dy;
+      if (inBounds(nx, ny) && grid[idx(nx, ny)] === 'road') {
+        removeTileMesh(nx, ny);
+        buildTileMesh('road', nx, ny);
+      }
+    }
+    updateHUD();
+    return;
+  }
+
+  if (cur) return;
+  const cost = COST[tool];
+  if (money < cost) { log('Недостаточно средств'); return; }
+  money -= cost;
+  grid[i] = tool;
+  if (tool === 'road') rebuildRoadNeighbors(x, y);
+  else buildTileMesh(tool, x, y);
+  updateHUD();
+}
+
+function economyTick() {
+  let inc = 0, upkeep = 0;
+  const houses = [], schools = [];
+  for (let y = 0; y < ROWS; y++)
+    for (let x = 0; x < COLS; x++) {
+      const t = grid[idx(x, y)];
+      if (t === 'house') houses.push({ x, y, acc: hasRoadAccess(x, y) });
+      if (t === 'school') schools.push({ x, y, acc: hasRoadAccess(x, y) });
+    }
+  for (const h of houses) if (h.acc) inc += 8;
+  for (const s of schools) {
+    if (!s.acc) continue;
+    upkeep += 6;
+    for (const h of houses)
+      if (h.acc && Math.abs(h.x-s.x) <= 2 && Math.abs(h.y-s.y) <= 2) inc += 3;
+  }
+  income = inc - upkeep; money += income;
+  updateHUD();
+}
+
+/* ================= Машины ================= */
+const CAR_COLORS = [0xf2c14e, 0xe4572e, 0x76b5c5, 0xe8e8e8];
+function createCarMesh(color) {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(TILE*0.35, TILE*0.22, TILE*0.6),
+    new THREE.MeshLambertMaterial({ color })
+  );
+  body.position.y = TILE*0.11;
+  body.castShadow = true;
+  g.add(body);
+  const cabin = new THREE.Mesh(
+    new THREE.BoxGeometry(TILE*0.28, TILE*0.15, TILE*0.3),
+    new THREE.MeshLambertMaterial({ color: 0x222222 })
+  );
+  cabin.position.y = TILE*0.22;
+  g.add(cabin);
+  return g;
+}
+
+function spawnCar() {
+  const b = weightedBuildings();
+  if (!b.length) return null;
+  const from = b[(Math.random() * b.length) | 0];
+  const start = buildingRoadTile(from);
+  if (!start) return null;
+
+  for (let i = 0; i < 8; i++) {
+    const to = b[(Math.random() * b.length) | 0];
+    const goal = buildingRoadTile(to);
+    if (!goal || (goal.x === start.x && goal.y === start.y)) continue;
+    const path = aStar(start, goal);
+    if (!path || path.length < 2) continue;
+    const mesh = createCarMesh(CAR_COLORS[(Math.random()*CAR_COLORS.length)|0]);
+    scene.add(mesh);
+    return { path, pathIdx: 0, t: 0, mesh };
+  }
+  return null;
+}
+
+function assignNewJourney(c) {
+  const b = weightedBuildings();
+  if (!b.length) return false;
+  const cur = c.path[c.path.length - 1];
+  for (let i = 0; i < 8; i++) {
+    const to = b[(Math.random() * b.length) | 0];
+    const goal = buildingRoadTile(to);
+    if (!goal || (goal.x === cur.x && goal.y === cur.y)) continue;
+    const path = aStar(cur, goal);
+    if (!path || path.length < 2) continue;
+    c.path = path; c.pathIdx = 0; c.t = 0;
+    return true;
+  }
+  return false;
+}
+
+function disposeCar(c) {
+  scene.remove(c.mesh);
+  c.mesh.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+}
+
+function maintainCars() {
+  cars = cars.filter(c => {
+    if (!c.path || c.path.length < 2 ||
+        !c.path.every(t => grid[idx(t.x, t.y)] === 'road')) {
+      disposeCar(c); return false;
+    }
+    return true;
+  });
+  const target = Math.min(30, weightedBuildings().length);
+  while (cars.length < target) {
+    const car = spawnCar();
+    if (!car) break;
+    cars.push(car);
+  }
+}
+
+function updateCars(dt) {
+  for (let i = cars.length - 1; i >= 0; i--) {
+    const c = cars[i];
+    c.t += dt * SPEED;
+    while (c.t >= 1 && c.pathIdx < c.path.length - 1) {
+      c.t -= 1; c.pathIdx++;
+    }
+    if (c.pathIdx >= c.path.length - 1) {
+      trips++;
+      if (!assignNewJourney(c)) { disposeCar(c); cars.splice(i, 1); continue; }
+    }
+    const a = c.path[c.pathIdx];
+    const b = c.path[c.pathIdx + 1] || a;
+    const wa = tileToWorld(a.x, a.y), wb = tileToWorld(b.x, b.y);
+    c.mesh.position.set(
+      wa.x + (wb.x - wa.x) * c.t,
+      0.05,
+      wa.z + (wb.z - wa.z) * c.t
+    );
+    const dx = wb.x - wa.x, dz = wb.z - wa.z;
+    if (dx || dz) c.mesh.rotation.y = Math.atan2(dx, dz);
+  }
+}
+
+/* ================= Пикинг и ввод ================= */
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+const pickPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const pickPoint = new THREE.Vector3();
+
+function pickTile(clientX, clientY) {
+  const r = renderer.domElement.getBoundingClientRect();
+  pointer.x = ((clientX - r.left) / r.width) * 2 - 1;
+  pointer.y = -((clientY - r.top) / r.height) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+  if (!raycaster.ray.intersectPlane(pickPlane, pickPoint)) return null;
+  return worldToTile(pickPoint);
+}
+function moveHighlight(tile) {
+  if (!tile) { highlight.visible = false; return; }
+  const p = tileToWorld(tile.x, tile.y);
+  highlight.position.set(p.x, 0.04, p.z);
+  highlight.visible = true;
+}
+
+renderer.domElement.addEventListener('pointermove', e => {
+  const t = pickTile(e.clientX, e.clientY);
+  moveHighlight(t);
+  if (dragging && t) {
+    const key = t.x + ',' + t.y;
+    if (key !== lastTile) { lastTile = key; place(t.x, t.y); }
+  }
+});
+renderer.domElement.addEventListener('pointerdown', e => {
+  if (e.button !== 0) return;
+  const t = pickTile(e.clientX, e.clientY);
+  if (!t) return;
+  dragging = true;
+  lastTile = t.x + ',' + t.y;
+  place(t.x, t.y);
+});
+window.addEventListener('pointerup', () => { dragging = false; lastTile = null; });
+renderer.domElement.addEventListener('pointerleave', () => { highlight.visible = false; });
+
+/* ================= UI ================= */
+const moneyEl  = document.getElementById('money');
+const incomeEl = document.getElementById('income');
+const tripsEl  = document.getElementById('trips');
+const carsEl   = document.getElementById('cars');
+const logEl    = document.getElementById('log');
+const toolsEl  = document.getElementById('tools');
+
+function updateHUD() {
+  moneyEl.textContent  = Math.round(money) + ' ₡';
+  moneyEl.style.color  = money < 0 ? '#ff6b6b' : '#e8f0ea';
+  incomeEl.textContent = (income >= 0 ? '+' : '') + income + ' ₡';
+  incomeEl.style.color = income > 0 ? '#5fd08a' : income < 0 ? '#ff6b6b' : '#e8f0ea';
+  tripsEl.textContent  = trips;
+  carsEl.textContent   = cars.length;
+}
+function log(msg) {
+  const l = document.createElement('div');
+  l.textContent = msg;
+  logEl.prepend(l);
+  while (logEl.children.length > 4) logEl.lastChild.remove();
+}
+function selectTool(id) {
+  tool = id;
+  [...toolsEl.children].forEach(b => b.classList.toggle('active', b.dataset.tool === id));
+}
+TOOLS.forEach(t => {
+  const b = document.createElement('button');
+  b.textContent = t.name + (t.cost ? ` — ${t.cost} ₡` : '');
+  b.dataset.tool = t.id;
+  b.onclick = () => selectTool(t.id);
+  toolsEl.appendChild(b);
+});
+selectTool('road');
+window.addEventListener('keydown', e => {
+  const i = parseInt(e.key, 10) - 1;
+  if (i >= 0 && i < TOOLS.length) selectTool(TOOLS[i].id);
+});
+
+/* ================= Стартовая сцена ================= */
+for (let x = 3; x <= 12; x++) grid[idx(x, 7)] = 'road';
+for (let y = 4; y <= 10; y++) grid[idx(8, y)] = 'road';
+grid[idx(6, 6)]  = 'house';
+grid[idx(9, 6)]  = 'house';
+grid[idx(11, 8)] = 'house';
+grid[idx(5, 8)]  = 'house';
+grid[idx(8, 9)]  = 'school';
+
+// строим меши после того, как сетка заполнена (чтобы разметка видела соседей)
+for (let y = 0; y < ROWS; y++)
+  for (let x = 0; x < COLS; x++) {
+    const t = grid[idx(x, y)];
+    if (t) buildTileMesh(t, x, y);
+  }
+
+updateHUD();
+
+/* ================= Resize и главный цикл ================= */
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  controls.update();
+  updateCars(dt);
+  tickAcc += dt;
+  if (tickAcc >= 2) { tickAcc -= 2; economyTick(); }
+  carAcc += dt;
+  if (carAcc >= 0.5) { carAcc = 0; maintainCars(); }
+  renderer.render(scene, camera);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
