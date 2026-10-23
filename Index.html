@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>CityRT — прототип уровня</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#1b2320;color:#e8f0ea;font-family:system-ui,Segoe UI,Roboto,sans-serif;
+       display:flex;justify-content:center;padding:24px;min-height:100vh}
+  .wrap{display:flex;gap:16px;align-items:flex-start}
+  .panel{width:230px;display:flex;flex-direction:column;gap:8px}
+  .stat{background:#26302c;border-radius:10px;padding:10px 12px;font-size:13px;color:#9fb3a8}
+  .stat b{display:block;font-size:22px;color:#e8f0ea}
+  .tools{display:flex;flex-direction:column;gap:6px;margin-top:4px}
+  button{cursor:pointer;background:#2f3d37;border:2px solid transparent;color:#e8f0ea;
+         padding:10px;border-radius:10px;text-align:left;font-size:14px;font-family:inherit}
+  button:hover{background:#3a4a43}
+  button.active{border-color:#5fd08a;background:#35473e}
+  canvas{border-radius:12px;display:block;cursor:crosshair;box-shadow:0 8px 30px #0006}
+  .hint{font-size:12px;color:#8fa89b;line-height:1.45}
+  #log{margin-top:auto;font-size:12px;color:#9fb3a8;display:flex;flex-direction:column;gap:3px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="panel">
+    <div class="stat">Бюджет<b id="money">1000 ₡</b></div>
+    <div class="stat">Доход за тик<b id="income">0 ₡</b></div>
+    <div class="tools" id="tools"></div>
+    <div class="hint">ЛКМ — построить (дорогу можно тянуть). Клавиши 1–4 — инструменты.</div>
+    <div id="log"></div>
+  </div>
+  <canvas id="game"></canvas>
+</div>
+
+<script>
+/* ---------------- Константы и состояние ---------------- */
+const TILE = 32, COLS = 20, ROWS = 15;
+const canvas = document.getElementById('game');
+canvas.width = COLS * TILE;
+canvas.height = ROWS * TILE;
+const ctx = canvas.getContext('2d');
+
+const COST = { road: 10, house: 120, school: 250 };
+const TOOLS = [
+  { id: 'road',     name: '🛣  Дорога', cost: COST.road },
+  { id: 'house',    name: '🏠  Дом',    cost: COST.house },
+  { id: 'school',   name: '🏫  Школа',  cost: COST.school },
+  { id: 'bulldoze', name: '💣  Снести', cost: 0 },
+];
+const DIRS = [[1,0],[-1,0],[0,1],[0,-1]];
+
+const grid = new Array(COLS * ROWS).fill(null); // null | 'road' | 'house' | 'school'
+const idx = (x, y) => y * COLS + x;
+const inBounds = (x, y) => x >= 0 && y >= 0 && x < COLS && y < ROWS;
+
+let money = 1000;
+let income = 0;
+let tool = 'road';
+let hover = null;
+let dragging = false;
+let lastTile = null;
+let cars = [];
+let tickAcc = 0, carAcc = 0;
+
+/* ---------------- Вспомогательная логика ---------------- */
+function hasRoadAccess(x, y) {
+  return DIRS.some(([dx, dy]) => {
+    const nx = x + dx, ny = y + dy;
+    return inBounds(nx, ny) && grid[idx(nx, ny)] === 'road';
+  });
+}
+
+function roadTiles() {
+  const r = [];
+  for (let y = 0; y < ROWS; y++)
+    for (let x = 0; x < COLS; x++)
+      if (grid[idx(x, y)] === 'road') r.push({ x, y });
+  return r;
+}
+
+/* ---------------- Постройка ---------------- */
+function place(x, y) {
+  if (!inBounds(x, y)) return;
+  const i = idx(x, y);
+  const cur = grid[i];
+
+  if (tool === 'bulldoze') {
+    if (!cur) return;
+    const refund = Math.floor(COST[cur] * 0.5);
+    money += refund;
+    grid[i] = null;
+    log(`Снесено: ${cur} (+${refund} ₡)`);
+    updateHUD();
+    return;
+  }
+
+  if (cur) return;
+  const cost = COST[tool];
+  if (money < cost) { log('Недостаточно средств'); return; }
+
+  money -= cost;
+  grid[i] = tool;
+  updateHUD();
+}
+
+/* ---------------- Экономика (тик раз в 2 сек) ---------------- */
+function economyTick() {
+  const houses = [], schools = [];
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      const t = grid[idx(x, y)];
+      if (t === 'house')  houses.push({ x, y, acc: hasRoadAccess(x, y) });
+      if (t === 'school') schools.push({ x, y, acc: hasRoadAccess(x, y) });
+    }
+  }
+
+  let inc = 0, upkeep = 0;
+  for (const h of houses) if (h.acc) inc += 8;              // дом приносит налог
+  for (const s of schools) {
+    if (!s.acc) continue;                                    // школа без дороги не работает
+    upkeep += 6;                                             // содержание школы
+    for (const h of houses) {                                // бонус за близость
+      if (h.acc && Math.abs(h.x - s.x) <= 2 && Math.abs(h.y - s.y) <= 2) inc += 3;
+    }
+  }
+
+  income = inc - upkeep;
+  money += income;
+  updateHUD();
+}
+
+/* ---------------- Трафик ---------------- */
+function pickTarget(c) {
+  const opts = DIRS
+    .map(([dx, dy]) => ({ x: c.x + dx, y: c.y + dy }))
+    .filter(p => inBounds(p.x, p.y) && grid[idx(p.x, p.y)] === 'road');
+
+  let list = opts.filter(p => !(c.prev && p.x === c.prev.x && p.y === c.prev.y)); // без разворота
+  if (!list.length) list = opts;
+  if (!list.length) { c.to = null; return; }
+
+  c.to = list[(Math.random() * list.length) | 0];
+  c.from = { x: c.x, y: c.y };
+  c.t = 0;
+}
+
+function maintainCars() {
+  cars = cars.filter(c => grid[idx(c.x, c.y)] === 'road' &&
+                          (!c.to || grid[idx(c.to.x, c.to.y)] === 'road'));
+
+  const rt = roadTiles();
+  const target = Math.min(24, Math.floor(rt.length / 3));
+  const palette = ['#f2c14e', '#e4572e', '#76b5c5', '#e8e8e8'];
+
+  while (cars.length < target) {
+    const t = rt[(Math.random() * rt.length) | 0];
+    const c = { x: t.x, y: t.y, prev: null, from: null, to: null, t: 0,
+                color: palette[(Math.random() * palette.length) | 0] };
+    pickTarget(c);
+    cars.push(c);
+  }
+}
+
+function updateCars(dt) {
+  for (const c of cars) {
+    if (!c.to) { pickTarget(c); if (!c.to) continue; }
+    c.t += dt * 1.8;
+    if (c.t >= 1) {
+      c.x = c.to.x; c.y = c.to.y;
+      c.prev = c.from;
+      c.to = null; c.t = 0;
+      pickTarget(c);
+    }
+  }
+}
+
+/* ---------------- Отрисовка ---------------- */
+function drawRoad(px, py, x, y) {
+  ctx.fillStyle = '#4b5257';
+  ctx.fillRect(px, py, TILE, TILE);
+
+  const l = inBounds(x-1,y) && grid[idx(x-1,y)] === 'road';
+  const r = inBounds(x+1,y) && grid[idx(x+1,y)] === 'road';
+  const u = inBounds(x,y-1) && grid[idx(x,y-1)] === 'road';
+  const d = inBounds(x,y+1) && grid[idx(x,y+1)] === 'road';
+
+  ctx.fillStyle = '#d9d16a';
+  if (l && r) ctx.fillRect(px, py + TILE/2 - 1, TILE, 2);
+  if (u && d) ctx.fillRect(px + TILE/2 - 1, py, 2, TILE);
+}
+
+function drawHouse(px, py, x, y) {
+  const acc = hasRoadAccess(x, y);
+  ctx.fillStyle = acc ? '#c46a45' : '#7a5a4a';
+  ctx.fillRect(px + 5, py + 8, TILE - 10, TILE - 12);
+
+  ctx.fillStyle = '#8e4b2f';
+  ctx.beginPath();
+  ctx.moveTo(px + 3, py + 10);
+  ctx.lineTo(px + TILE/2, py + 2);
+  ctx.lineTo(px + TILE - 3, py + 10);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = '#ffe9b0';
+  ctx.fillRect(px + TILE/2 - 3, py + TILE - 12, 6, 8);
+
+  if (!acc) {
+    ctx.fillStyle = '#ff5252';
+    ctx.beginPath(); ctx.arc(px + TILE - 8, py + 8, 3, 0, 7); ctx.fill();
+  }
+}
+
+function drawSchool(px, py, x, y) {
+  const acc = hasRoadAccess(x, y);
+  ctx.fillStyle = acc ? '#4a7fc9' : '#4a5a72';
+  ctx.fillRect(px + 4, py + 8, TILE - 8, TILE - 12);
+
+  ctx.fillStyle = '#e8eef7';
+  for (let i = 0; i < 2; i++) ctx.fillRect(px + 8 + i * 8, py + 13, 5, 5);
+
+  if (!acc) {
+    ctx.fillStyle = '#ff5252';
+    ctx.beginPath(); ctx.arc(px + TILE - 8, py + 8, 3, 0, 7); ctx.fill();
+  }
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      const px = x * TILE, py = y * TILE;
+      ctx.fillStyle = ((x + y) & 1) ? '#33403a' : '#37463f';
+      ctx.fillRect(px, py, TILE, TILE);
+
+      const t = grid[idx(x, y)];
+      if (t === 'road')        drawRoad(px, py, x, y);
+      else if (t === 'house')  drawHouse(px, py, x, y);
+      else if (t === 'school') drawSchool(px, py, x, y);
+    }
+  }
+
+  // Машины
+  for (const c of cars) {
+    let cx, cy;
+    if (c.to) {
+      const fx = c.from.x + 0.5, fy = c.from.y + 0.5;
+      const tx = c.to.x + 0.5,   ty = c.to.y + 0.5;
+      cx = fx + (tx - fx) * c.t;
+      cy = fy + (ty - fy) * c.t;
+    } else {
+      cx = c.x + 0.5; cy = c.y + 0.5;
+    }
+    ctx.fillStyle = c.color;
+    ctx.fillRect(cx * TILE - 4, cy * TILE - 4, 8, 8);
+  }
+
+  // Подсветка курсора
+  if (hover) {
+    ctx.fillStyle = 'rgba(95,208,138,0.25)';
+    ctx.fillRect(hover.x * TILE, hover.y * TILE, TILE, TILE);
+    ctx.strokeStyle = '#5fd08a';
+    ctx.strokeRect(hover.x * TILE + 0.5, hover.y * TILE + 0.5, TILE - 1, TILE - 1);
+  }
+}
+
+/* ---------------- HUD и ввод ---------------- */
+const moneyEl  = document.getElementById('money');
+const incomeEl = document.getElementById('income');
+const logEl    = document.getElementById('log');
+const toolsEl  = document.getElementById('tools');
+
+function updateHUD() {
+  moneyEl.textContent  = Math.round(money) + ' ₡';
+  moneyEl.style.color  = money < 0 ? '#ff6b6b' : '#e8f0ea';
+  incomeEl.textContent = (income >= 0 ? '+' : '') + income + ' ₡';
+  incomeEl.style.color = income > 0 ? '#5fd08a' : income < 0 ? '#ff6b6b' : '#e8f0ea';
+}
+
+function log(msg) {
+  const line = document.createElement('div');
+  line.textContent = msg;
+  logEl.prepend(line);
+  while (logEl.children.length > 4) logEl.lastChild.remove();
+}
+
+function selectTool(id) {
+  tool = id;
+  [...toolsEl.children].forEach(b => b.classList.toggle('active', b.dataset.tool === id));
+}
+
+TOOLS.forEach(t => {
+  const b = document.createElement('button');
+  b.textContent = t.name + (t.cost ? ` — ${t.cost} ₡` : '');
+  b.dataset.tool = t.id;
+  b.onclick = () => selectTool(t.id);
+  toolsEl.appendChild(b);
+});
+selectTool('road');
+
+function tileFromEvent(e) {
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: Math.floor((e.clientX - r.left) * (canvas.width  / r.width)  / TILE),
+    y: Math.floor((e.clientY - r.top)  * (canvas.height / r.height) / TILE),
+  };
+}
+
+canvas.addEventListener('mousemove', e => {
+  const p = tileFromEvent(e);
+  hover = inBounds(p.x, p.y) ? p : null;
+
+  if (dragging) {
+    const key = p.x + ',' + p.y;
+    if (key !== lastTile) { lastTile = key; place(p.x, p.y); }
+  }
+});
+
+canvas.addEventListener('mousedown', e => {
+  if (e.button !== 0) return;
+  const p = tileFromEvent(e);
+  dragging = true;
+  lastTile = p.x + ',' + p.y;
+  place(p.x, p.y);
+});
+
+window.addEventListener('mouseup', () => { dragging = false; lastTile = null; });
+canvas.addEventListener('mouseleave', () => { hover = null; });
+
+window.addEventListener('keydown', e => {
+  const i = parseInt(e.key, 10) - 1;
+  if (i >= 0 && i < TOOLS.length) selectTool(TOOLS[i].id);
+});
+
+/* ---------------- Стартовая сцена и главный цикл ---------------- */
+for (let x = 4; x <= 10; x++) grid[idx(x, 7)] = 'road';  // демо-дорога
+
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+
+  updateCars(dt);
+
+  tickAcc += dt;
+  if (tickAcc >= 2) { tickAcc -= 2; economyTick(); }
+
+  carAcc += dt;
+  if (carAcc >= 0.5) { carAcc = 0; maintainCars(); }
+
+  draw();
+  requestAnimationFrame(loop);
+}
+
+updateHUD();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
