@@ -1,0 +1,1791 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>CityRT — выбор домов</title>
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;overflow:hidden;font-family:system-ui,Segoe UI,Roboto,sans-serif;background:#1b2320;color:#e8f0ea}
+  canvas{display:block}
+  #ui{position:fixed;top:16px;left:16px;width:250px;z-index:10;display:flex;flex-direction:column;gap:8px;pointer-events:none}
+  #ui > *{pointer-events:auto}
+  .stat{background:rgba(38,48,44,.9);backdrop-filter:blur(8px);border-radius:10px;padding:10px 12px;font-size:13px;color:#9fb3a8}
+  .stat b{display:block;font-size:22px;color:#e8f0ea}
+  .stat.small b{display:inline;font-size:13px}
+  
+  .tools{display:flex;flex-direction:column;gap:6px}
+  button{cursor:pointer;background:rgba(47,61,55,.9);backdrop-filter:blur(8px);border:2px solid transparent;color:#e8f0ea;padding:10px;border-radius:10px;text-align:left;font-size:14px;font-family:inherit;transition:0.15s}
+  button:hover{background:rgba(58,74,67,.95)}
+  button.active{border-color:#5fd08a;background:rgba(53,71,62,.95)}
+
+  /* === Меню выбора домов === */
+  #houseMenu {
+    display: none; 
+    flex-direction: column; 
+    gap: 6px; 
+    margin-left: 12px; 
+    padding-left: 12px; 
+    border-left: 2px solid rgba(95, 208, 138, 0.4);
+  }
+  #houseMenu button {
+    padding: 6px 10px;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border-radius: 8px;
+    background: rgba(30, 38, 35, 0.9);
+  }
+  #houseMenu button img {
+    width: 32px;
+    height: 32px;
+    object-fit: contain;
+    border-radius: 4px;
+    background: rgba(0,0,0,0.2);
+  }
+  .house-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .house-name { font-weight: 600; color: #e8f0ea; }
+  .house-price { color: #8fa89b; font-size: 11px; }
+
+  .hint{font-size:12px;color:#8fa89b;line-height:1.45;background:rgba(38,48,44,.7);padding:8px 10px;border-radius:8px}
+  #log{font-size:12px;color:#9fb3a8;display:flex;flex-direction:column;gap:3px}
+  #confirm{position:fixed;z-index:100;display:none;background:rgba(20,28,25,.96);border:1px solid rgba(95,208,138,.55);border-radius:10px;padding:9px 11px;min-width:160px;box-shadow:0 6px 22px rgba(0,0,0,.55);font-size:12px;user-select:none;animation:confirmIn .12s ease-out}
+  @keyframes confirmIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+  #confirm::before{content:'';position:absolute;left:-6px;top:14px;border-top:6px solid transparent;border-bottom:6px solid transparent;border-right:6px solid rgba(95,208,138,.55)}
+  .confirm-title{color:#9fb3a8;font-size:11px;letter-spacing:.04em;text-transform:uppercase;margin-bottom:3px}
+  .confirm-cost{font-size:18px;font-weight:700;color:#e8f0ea;margin-bottom:8px;line-height:1}
+  .confirm-cost span{font-size:11px;font-weight:400;color:#8fa89b;margin-left:4px}
+  .confirm-actions{display:flex;gap:5px}
+  .confirm-actions button{flex:1;padding:6px 8px;font-size:11px;border-radius:6px;text-align:center;font-weight:600;border:none}
+  .confirm-ok{background:#5fd08a;color:#1b2320}
+  .confirm-ok:hover{background:#7ee0a3}
+  .confirm-no{background:#3a4a43;color:#e8f0ea}
+  .confirm-no:hover{background:#4a5a53}
+  #priceTag{position:fixed;top:0;left:0;z-index:95;display:none;pointer-events:none;will-change:transform}
+  #priceTagInner{display:inline-block;padding:5px 9px;border-radius:8px;background:rgba(20,28,25,.94);border:1px solid rgba(95,208,138,.55);color:#e8f0ea;font-size:12px;font-weight:700;white-space:nowrap;letter-spacing:.02em;box-shadow:0 3px 12px rgba(0,0,0,.5);transform-origin:center center}
+  #priceTagInner::before{content:'';display:inline-block;width:6px;height:6px;border-radius:50%;background:#5fd08a;margin-right:6px;vertical-align:1px}
+  #priceTag.negative #priceTagInner{border-color:rgba(255,107,107,.7);color:#ff8f8f}
+  #priceTag.negative #priceTagInner::before{background:#ff6b6b}
+  #priceTag.zero #priceTagInner{border-color:rgba(143,168,155,.4);color:#8fa89b}
+  #priceTag.zero #priceTagInner::before{background:#8fa89b}
+  #priceTag.income #priceTagInner{border-color:rgba(107,190,255,.6);color:#9fd0ff}
+  #priceTag.income #priceTagInner::before{background:#6bbeff}
+  #priceTagInner.pulse{animation:pricePulse .22s ease-out}
+  @keyframes pricePulse{0%{transform:scale(1)}40%{transform:scale(1.18)}100%{transform:scale(1)}}
+</style>
+</head>
+<body>
+<div id="ui">
+  <div class="stat">Бюджет<b id="money">1000 ₡</b></div>
+  <div class="stat">Доход за тик<b id="income">0 ₡</b></div>
+  <div class="stat small">Поездок: <b id="trips">0</b> · Машин: <b id="cars">0</b> · Пешеходов: <b id="peds">0</b></div>
+  
+  <div class="tools" id="tools">
+    <!-- Кнопки будут сгенерированы в JS -->
+  </div>
+  
+  <!-- Подменю для выбора дома -->
+  <div id="houseMenu"></div>
+
+  <div class="hint">ЛКМ — тянем дорогу · клик — здание/светофор<br>При выборе дома доступно подменю</div>
+  <div id="log"></div>
+</div>
+<div id="confirm">
+  <div class="confirm-title" id="confirm-title">Дорога</div>
+  <div class="confirm-cost" id="confirm-cost">—</div>
+  <div class="confirm-actions">
+    <button class="confirm-ok" id="confirm-ok">Построить</button>
+    <button class="confirm-no" id="confirm-no">Отмена</button>
+  </div>
+</div>
+<div id="priceTag"><span id="priceTagInner"></span></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const TILE = 2, COLS = 20, ROWS = 15;
+const ROAD_SEG = 4;
+const SKIRT_DEPTH = 0.1;
+const DIRS = [[1,0],[-1,0],[0,1],[0,-1]];
+
+// ===== ДАННЫЕ ДОМОВ =====
+const textureLoader = new THREE.TextureLoader();
+const texHouse1 = textureLoader.load('house1.png');
+const texHouse2 = textureLoader.load('house2.png');
+texHouse1.colorSpace = THREE.SRGBColorSpace;
+texHouse2.colorSpace = THREE.SRGBColorSpace;
+
+const HOUSE_TYPES = {
+  'house1': { 
+    id: 'house1', 
+    name: 'Классический', 
+    price: 120, 
+    income: 8, 
+    texture: texHouse1, 
+    aspect: 1175 / 1568, // пропорции первой картинки
+    height: TILE * 2.2 
+  },
+  'house2': { 
+    id: 'house2', 
+    name: 'Эко-апартаменты', 
+    price: 250, 
+    income: 15, 
+    texture: texHouse2, 
+    aspect: 1, // новая картинка квадратная
+    height: TILE * 2.8 
+  }
+};
+
+let currentHouseType = 'house1'; // Выбранный дом по умолчанию
+
+const COST = { road: 10, trafficlight: 80, school: 250 };
+const TOOLS = [
+  { id: 'road',         name: '🛣  Дорога',    cost: COST.road },
+  { id: 'trafficlight', name: '🚦 Светофор',  cost: COST.trafficlight },
+  { id: 'house',        name: '🏠  Дом',       cost: 0 }, // Цена динамическая
+  { id: 'school',       name: '🏫  Школа',     cost: COST.school },
+  { id: 'bulldoze',     name: '💣  Снести',    cost: 0 },
+];
+
+const MAX_CARS = 7;
+const ROADS_PER_CAR = 4;
+const LANE_OFFSET = 0.4;
+const CAR_LENGTH = TILE * 0.5;
+const CAR_WIDTH = TILE * 0.25;
+
+const IDM = { S0: 0.6, T_REACT: 1.0, A_MAX: 1.5, B_COMF: 2.0, DELTA: 4 };
+const LIGHT_DUR = { green: 8, yellow: 2.5, allRed: 1 };
+
+const MAX_PEDESTRIANS = 15;
+const PED_SPAWN_INTERVAL = 2.2;
+const PEDESTRIAN_SPEED = 0.7;
+const SIDEWALK_OFFSET = 0.85;
+const PED_COLORS = [0x88ccff, 0xff88cc, 0xffdd88, 0xaaffaa, 0xddaaff, 0xffaa88];
+
+const ROAD_FLAT_R  = TILE * 0.62;
+const ROAD_BLEND_R = TILE * 2.5;
+const BUCKET_SIZE  = 4;
+const PULSE_THROTTLE_MS = 120;
+
+const grid = new Array(COLS * ROWS).fill(null);
+const idx = (x, y) => y * COLS + x;
+const inBounds = (x, y) => x >= 0 && y >= 0 && x < COLS && y < ROWS;
+
+// Хелпер для проверки, является ли тайл домом (любым)
+const isHouse = (type) => type === 'house1' || type === 'house2';
+
+let money = 1000, income = 0;
+let tool = 'road', hover = null;
+let cars = [], tickAcc = 0, carAcc = 0, trips = 0;
+let roadDirty = false;
+
+let dragging = false;
+let previewStart = null;
+let previewTiles = [];
+let previewGroup = null;
+let pending = null;
+
+const lights = new Map();
+let pedestrians = [];
+let pedSpawnAcc = 0;
+
+/* ================= Крестик ================= */
+let crossMaterial = null;
+function getCrossMaterial() {
+  if (crossMaterial) return crossMaterial;
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d');
+  g.fillStyle = 'rgba(255,60,60,0.95)';
+  g.beginPath(); g.arc(32, 32, 28, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = '#ffffff'; g.lineWidth = 7; g.lineCap = 'round';
+  g.beginPath(); g.moveTo(20, 20); g.lineTo(44, 44); g.moveTo(44, 20); g.lineTo(20, 44); g.stroke();
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  crossMaterial = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false });
+  return crossMaterial;
+}
+function createCrossSprite() {
+  const s = new THREE.Sprite(getCrossMaterial());
+  s.scale.set(1.4, 1.4, 1);
+  s.userData.bobPhase = Math.random() * Math.PI * 2;
+  s.renderOrder = 999;
+  return s;
+}
+
+/* ================= Координаты ================= */
+function tileToWorld(x, y) {
+  return new THREE.Vector3((x - COLS/2 + 0.5) * TILE, 0, (y - ROWS/2 + 0.5) * TILE);
+}
+function tileBaseXZ(x, y) {
+  return { x: (x - COLS/2) * TILE, z: (y - ROWS/2) * TILE };
+}
+function worldToTile(p) {
+  const x = Math.floor(p.x / TILE + COLS/2);
+  const y = Math.floor(p.z / TILE + ROWS/2);
+  return inBounds(x, y) ? { x, y } : null;
+}
+
+/* ================= Рельеф ================= */
+function naturalHeight(wx, wz) {
+  return Math.sin(wx * 0.06) * Math.cos(wz * 0.08) * 0.5
+       + Math.sin(wx * 0.03 + wz * 0.05) * 0.4;
+}
+const roadTargets = new Map();
+const roadBuckets = new Map();
+const bucketKey = (bx, by) => bx * 1000 + by;
+
+function buildRoadTargets() {
+  roadTargets.clear();
+  const list = [];
+  for (let y = 0; y < ROWS; y++)
+    for (let x = 0; x < COLS; x++)
+      if (grid[idx(x, y)] === 'road') {
+        const p = tileToWorld(x, y);
+        roadTargets.set(idx(x, y), naturalHeight(p.x, p.z));
+        list.push({ x, y });
+      }
+  for (let iter = 0; iter < 6; iter++) {
+    const updates = new Map();
+    for (const { x, y } of list) {
+      let sum = 0, count = 0;
+      for (const [dx, dy] of DIRS) {
+        const nx = x+dx, ny = y+dy;
+        if (inBounds(nx, ny) && grid[idx(nx, ny)] === 'road') {
+          sum += roadTargets.get(idx(nx, ny)); count++;
+        }
+      }
+      const cur = roadTargets.get(idx(x, y));
+      updates.set(idx(x, y), count > 0 ? cur * 0.3 + (sum/count) * 0.7 : cur);
+    }
+    for (const [k, v] of updates) roadTargets.set(k, v);
+  }
+  roadBuckets.clear();
+  for (const k of roadTargets.keys()) {
+    const x = k % COLS, y = (k / COLS) | 0;
+    const bx = Math.floor(x / BUCKET_SIZE), by = Math.floor(y / BUCKET_SIZE);
+    const key = bucketKey(bx, by);
+    if (!roadBuckets.has(key)) roadBuckets.set(key, []);
+    roadBuckets.get(key).push({
+      cx: (x - COLS/2 + 0.5) * TILE,
+      cz: (y - ROWS/2 + 0.5) * TILE,
+      targetY: roadTargets.get(k),
+    });
+  }
+}
+function influenceAt(wx, wz) {
+  if (roadTargets.size === 0) return { W: 0, targetY: 0 };
+  const R = ROAD_BLEND_R, R2 = R * R;
+  const FLAT_R2 = ROAD_FLAT_R * ROAD_FLAT_R;
+  const txf = wx / TILE + COLS/2 - 0.5, tyf = wz / TILE + ROWS/2 - 0.5;
+  const bxMin = Math.floor((txf - R/TILE) / BUCKET_SIZE);
+  const bxMax = Math.floor((txf + R/TILE) / BUCKET_SIZE);
+  const byMin = Math.floor((tyf - R/TILE) / BUCKET_SIZE);
+  const byMax = Math.floor((tyf + R/TILE) / BUCKET_SIZE);
+  let W = 0, sumT = 0;
+  for (let bx = bxMin; bx <= bxMax; bx++) {
+    for (let by = byMin; by <= byMax; by++) {
+      const bucket = roadBuckets.get(bucketKey(bx, by));
+      if (!bucket) continue;
+      for (const t of bucket) {
+        const dx = wx - t.cx, dz = wz - t.cz;
+        const d2 = dx*dx + dz*dz;
+        if (d2 >= R2) continue;
+        let w;
+        if (d2 <= FLAT_R2) w = 1;
+        else {
+          const d = Math.sqrt(d2);
+          const s = (R - d) / (R - ROAD_FLAT_R);
+          w = s * s * (3 - 2 * s);
+        }
+        W += w; sumT += w * t.targetY;
+      }
+    }
+  }
+  return { W: Math.min(W, 1), targetY: W > 0 ? sumT / W : 0 };
+}
+function effectiveHeight(wx, wz) {
+  const nat = naturalHeight(wx, wz);
+  const inf = influenceAt(wx, wz);
+  if (inf.W <= 0.001) return nat;
+  return nat * (1 - inf.W) + inf.targetY * inf.W;
+}
+
+/* ================= Сцена ================= */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1b2320);
+scene.fog = new THREE.Fog(0x1b2320, 60, 120);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.1, 220);
+camera.position.set(26, 30, 26);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.maxPolarAngle = Math.PI / 2.2;
+controls.minDistance = 10;
+controls.maxDistance = 70;
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const sun = new THREE.DirectionalLight(0xffffff, 1.1);
+sun.position.set(18, 28, 12);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+const SH = 34;
+sun.shadow.camera.left = -SH; sun.shadow.camera.right = SH;
+sun.shadow.camera.top  =  SH; sun.shadow.camera.bottom = -SH;
+sun.shadow.camera.near = 1;   sun.shadow.camera.far = 90;
+sun.shadow.bias = -0.0005;
+scene.add(sun);
+
+/* ================= Земля ================= */
+const gw = (COLS + 8) * TILE, gh = (ROWS + 8) * TILE;
+const GSEG = 4;
+const groundGeo = new THREE.PlaneGeometry(gw, gh, (COLS + 8) * GSEG, (ROWS + 8) * GSEG);
+groundGeo.rotateX(-Math.PI / 2);
+const colorArr = new Float32Array(groundGeo.attributes.position.count * 3);
+groundGeo.setAttribute('color', new THREE.BufferAttribute(colorArr, 3));
+
+const ground = new THREE.Mesh(groundGeo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+ground.receiveShadow = true;
+scene.add(ground);
+
+function rebuildGround() {
+  const pos = groundGeo.attributes.position;
+  const col = groundGeo.attributes.color;
+  for (let i = 0; i < pos.count; i++) {
+    const wx = pos.getX(i), wz = pos.getZ(i);
+    const nat = naturalHeight(wx, wz);
+    const inf = influenceAt(wx, wz);
+    const h = inf.W > 0.001 ? nat * (1 - inf.W) + inf.targetY * inf.W : nat;
+    pos.setY(i, h);
+    const ht = Math.min(1, Math.max(0, (h + 1.2) / 2.4));
+    const grassR = 0.13 + ht * 0.13;
+    const grassG = 0.20 + ht * 0.19;
+    const grassB = 0.17 + ht * 0.11;
+    const gb = Math.min(1, inf.W * 1.3);
+    col.setXYZ(i,
+      grassR * (1 - gb) + 0.36 * gb,
+      grassG * (1 - gb) + 0.34 * gb,
+      grassB * (1 - gb) + 0.30 * gb
+    );
+  }
+  pos.needsUpdate = true; col.needsUpdate = true;
+  groundGeo.computeVertexNormals();
+}
+
+/* ================= Сетка ================= */
+let gridLineMesh = null;
+function rebuildGridLines() {
+  if (gridLineMesh) { scene.remove(gridLineMesh); gridLineMesh.geometry.dispose(); }
+  const arr = [];
+  const STEPS = 6;
+  function addSeg(x1, z1, x2, z2) {
+    for (let i = 0; i < STEPS; i++) {
+      const a = i/STEPS, b = (i+1)/STEPS;
+      const p1x = x1 + (x2-x1)*a, p1z = z1 + (z2-z1)*a;
+      const p2x = x1 + (x2-x1)*b, p2z = z1 + (z2-z1)*b;
+      arr.push(p1x, effectiveHeight(p1x, p1z) + 0.03, p1z,
+               p2x, effectiveHeight(p2x, p2z) + 0.03, p2z);
+    }
+  }
+  const halfW = COLS * TILE / 2, halfH = ROWS * TILE / 2;
+  for (let x = 0; x <= COLS; x++) addSeg(-halfW + x*TILE, -halfH, -halfW + x*TILE, halfH);
+  for (let y = 0; y <= ROWS; y++) addSeg(-halfW, -halfH + y*TILE, halfW, -halfH + y*TILE);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
+  gridLineMesh = new THREE.LineSegments(g,
+    new THREE.LineBasicMaterial({ color: 0x4a6360, transparent: true, opacity: 0.55 }));
+  scene.add(gridLineMesh);
+}
+
+/* ================= Подсветка ================= */
+const highlight = new THREE.Mesh(
+  new THREE.PlaneGeometry(TILE, TILE),
+  new THREE.MeshBasicMaterial({ color: 0x5fd08a, transparent: true, opacity: 0.35, depthWrite: false })
+);
+highlight.rotation.x = -Math.PI / 2;
+highlight.visible = false;
+scene.add(highlight);
+
+/* ================= Материалы ================= */
+const MAT = {
+  road:      new THREE.MeshLambertMaterial({ color: 0x4b5257 }),
+  roadSkirt: new THREE.MeshLambertMaterial({ color: 0x3a4045, side: THREE.DoubleSide }),
+  lane:      new THREE.MeshBasicMaterial({ color: 0xd9d16a }),
+  school:    new THREE.MeshLambertMaterial({ color: 0x4a7fc9 }),
+  window:    new THREE.MeshBasicMaterial({ color: 0xffe9b0 }),
+};
+
+function hasRoadAccess(x, y) {
+  return DIRS.some(([dx, dy]) => {
+    const nx = x+dx, ny = y+dy;
+    return inBounds(nx, ny) && grid[idx(nx, ny)] === 'road';
+  });
+}
+
+/* ================= Здания ================= */
+const tileMeshes = new Map();
+
+function removeTileMesh(x, y) {
+  const m = tileMeshes.get(idx(x, y));
+  if (!m) return;
+  scene.remove(m);
+  m.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+  tileMeshes.delete(idx(x, y));
+}
+
+function setBuildingNoRoadGlow(group, on) {
+  const spriteMat = group.userData.spriteMat;
+  if (spriteMat) {
+    spriteMat.color.setHex(on ? 0xff6666 : 0xffffff);
+    return;
+  }
+  const bodyMat = group.userData.bodyMat;
+  const roofMat = group.userData.roofMat;
+  if (!bodyMat) return;
+  if (on) {
+    bodyMat.emissive.setHex(0x661111); bodyMat.emissiveIntensity = 0.6;
+    if (roofMat) { roofMat.emissive.setHex(0x440a0a); roofMat.emissiveIntensity = 0.5; }
+  } else {
+    bodyMat.emissive.setHex(0x000000); bodyMat.emissiveIntensity = 0;
+    if (roofMat) { roofMat.emissive.setHex(0x000000); roofMat.emissiveIntensity = 0; }
+  }
+}
+
+function buildBuildingMesh(type, x, y) {
+  const group = new THREE.Group();
+  const p = tileToWorld(x, y);
+  group.position.set(p.x, effectiveHeight(p.x, p.z), p.z);
+
+  if (isHouse(type)) {
+    const hType = HOUSE_TYPES[type];
+    const spriteMat = new THREE.SpriteMaterial({
+      map: hType.texture,
+      transparent: true,
+      alphaTest: 0.5,
+    });
+    const sprite = new THREE.Sprite(spriteMat);
+    
+    // Масштабируем в зависимости от пропорций картинки
+    sprite.scale.set(hType.height * hType.aspect, hType.height, 1);
+    sprite.center.set(0.5, 0);
+    sprite.position.y = 0.0; 
+    
+    group.add(sprite);
+    group.userData.spriteMat = spriteMat;
+
+  } else if (type === 'school') {
+    const bodyMat = MAT.school.clone();
+    const body = new THREE.Mesh(new THREE.BoxGeometry(TILE*0.85, TILE*0.6, TILE*0.85), bodyMat);
+    body.position.y = TILE*0.3; body.castShadow = body.receiveShadow = true;
+    group.add(body);
+    for (let i = 0; i < 3; i++) {
+      const win = new THREE.Mesh(new THREE.PlaneGeometry(TILE*0.15, TILE*0.15), MAT.window);
+      win.position.set((i - 1) * TILE*0.22, TILE*0.35, TILE*0.426); group.add(win);
+    }
+    group.userData.bodyMat = bodyMat; group.userData.roofMat = null;
+  }
+
+  if (!hasRoadAccess(x, y)) {
+    const cross = createCrossSprite();
+    const baseY = isHouse(type) ? TILE * 2.0 : TILE * 1.0; // Крестик чуть выше для домов
+    cross.position.y = baseY; cross.userData.baseY = baseY;
+    group.add(cross); group.userData.cross = cross;
+    setBuildingNoRoadGlow(group, true);
+  }
+  scene.add(group);
+  tileMeshes.set(idx(x, y), group);
+}
+
+function updateBuildingHeights() {
+  for (const [k, mesh] of tileMeshes) {
+    const x = k % COLS, y = (k / COLS) | 0;
+    const p = tileToWorld(x, y);
+    mesh.position.set(p.x, effectiveHeight(p.x, p.z), p.z);
+  }
+}
+
+function updateBuildingRoadStatus() {
+  for (const [k, group] of tileMeshes) {
+    const t = grid[k];
+    if (!isHouse(t) && t !== 'school') continue;
+    const x = k % COLS, y = (k / COLS) | 0;
+    const hasRoad = hasRoadAccess(x, y);
+    const existing = group.userData.cross;
+    if (!hasRoad && !existing) {
+      const cross = createCrossSprite();
+      const baseY = isHouse(t) ? TILE * 2.0 : TILE * 1.0;
+      cross.position.y = baseY; cross.userData.baseY = baseY;
+      group.add(cross); group.userData.cross = cross;
+      setBuildingNoRoadGlow(group, true);
+    } else if (hasRoad && existing) {
+      group.remove(existing); group.userData.cross = null;
+      setBuildingNoRoadGlow(group, false);
+    }
+  }
+}
+
+/* ================= Дороги ================= */
+let roadsMesh = null, skirtMesh = null, laneMesh = null;
+function disposeMesh(m) { if (!m) return; scene.remove(m); m.geometry.dispose(); }
+
+function rebuildRoads() {
+  disposeMesh(roadsMesh);  roadsMesh = null;
+  disposeMesh(skirtMesh);  skirtMesh = null;
+  disposeMesh(laneMesh);   laneMesh = null;
+
+  const list = [];
+  for (let y = 0; y < ROWS; y++)
+    for (let x = 0; x < COLS; x++)
+      if (grid[idx(x, y)] === 'road') list.push({ x, y });
+  if (!list.length) return;
+
+  const topVerts = [], topIdx = [];
+  const skirtVerts = [], skirtIdx = [];
+  const laneVerts = [], laneIdx = [];
+  const SEG = ROAD_SEG, LW = 0.09;
+
+  for (const { x, y } of list) {
+    const base = tileBaseXZ(x, y);
+    const startV = topVerts.length / 3;
+    for (let j = 0; j <= SEG; j++) {
+      for (let i = 0; i <= SEG; i++) {
+        const wx = base.x + (i/SEG) * TILE, wz = base.z + (j/SEG) * TILE;
+        topVerts.push(wx, effectiveHeight(wx, wz) + 0.04, wz);
+      }
+    }
+    for (let j = 0; j < SEG; j++) {
+      for (let i = 0; i < SEG; i++) {
+        const a = startV + j*(SEG+1) + i;
+        const b = a + 1, c = a + (SEG+1), d = c + 1;
+        topIdx.push(a, c, b, b, c, d);
+      }
+    }
+    const sides = [
+      { dx: 0, dy: -1, axis: 'x', edge: 0 },
+      { dx: 0, dy: 1,  axis: 'x', edge: TILE },
+      { dx: -1, dy: 0, axis: 'z', edge: 0 },
+      { dx: 1, dy: 0,  axis: 'z', edge: TILE },
+    ];
+    for (const s of sides) {
+      const nx = x + s.dx, ny = y + s.dy;
+      if (inBounds(nx, ny) && grid[idx(nx, ny)] === 'road') continue;
+      for (let i = 0; i < SEG; i++) {
+        const t1 = i/SEG, t2 = (i+1)/SEG;
+        let p1x, p1z, p2x, p2z;
+        if (s.axis === 'x') {
+          p1x = base.x + t1*TILE; p1z = base.z + s.edge;
+          p2x = base.x + t2*TILE; p2z = base.z + s.edge;
+        } else {
+          p1x = base.x + s.edge;  p1z = base.z + t1*TILE;
+          p2x = base.x + s.edge;  p2z = base.z + t2*TILE;
+        }
+        const y1 = effectiveHeight(p1x, p1z) + 0.04;
+        const y2 = effectiveHeight(p2x, p2z) + 0.04;
+        const sv = skirtVerts.length / 3;
+        skirtVerts.push(p1x, y1, p1z,  p2x, y2, p2z);
+        skirtVerts.push(p1x, y1 - SKIRT_DEPTH, p1z,  p2x, y2 - SKIRT_DEPTH, p2z);
+        skirtIdx.push(sv, sv+2, sv+1,  sv+1, sv+2, sv+3);
+      }
+    }
+    const hasL = inBounds(x-1,y) && grid[idx(x-1,y)] === 'road';
+    const hasR = inBounds(x+1,y) && grid[idx(x+1,y)] === 'road';
+    const hasU = inBounds(x,y-1) && grid[idx(x,y-1)] === 'road';
+    const hasD = inBounds(x,y+1) && grid[idx(x,y+1)] === 'road';
+    if (hasL && hasR) {
+      const pz = base.z + TILE/2;
+      for (let i = 0; i < SEG; i++) {
+        const t1 = i/SEG, t2 = (i+1)/SEG;
+        const px1 = base.x + t1*TILE, px2 = base.x + t2*TILE;
+        const y1 = effectiveHeight(px1, pz) + 0.06, y2 = effectiveHeight(px2, pz) + 0.06;
+        const lv = laneVerts.length / 3;
+        laneVerts.push(px1, y1, pz - LW,  px2, y2, pz - LW);
+        laneVerts.push(px1, y1, pz + LW,  px2, y2, pz + LW);
+        laneIdx.push(lv, lv+2, lv+1,  lv+1, lv+2, lv+3);
+      }
+    }
+    if (hasU && hasD) {
+      const px = base.x + TILE/2;
+      for (let i = 0; i < SEG; i++) {
+        const t1 = i/SEG, t2 = (i+1)/SEG;
+        const pz1 = base.z + t1*TILE, pz2 = base.z + t2*TILE;
+        const y1 = effectiveHeight(px, pz1) + 0.06, y2 = effectiveHeight(px, pz2) + 0.06;
+        const lv = laneVerts.length / 3;
+        laneVerts.push(px - LW, y1, pz1,  px - LW, y2, pz2);
+        laneVerts.push(px + LW, y1, pz1,  px + LW, y2, pz2);
+        laneIdx.push(lv, lv+2, lv+1,  lv+1, lv+2, lv+3);
+      }
+    }
+  }
+  {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(topVerts, 3));
+    g.setIndex(topIdx); g.computeVertexNormals();
+    roadsMesh = new THREE.Mesh(g, MAT.road);
+    roadsMesh.receiveShadow = true; scene.add(roadsMesh);
+  }
+  if (skirtVerts.length) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(skirtVerts, 3));
+    g.setIndex(skirtIdx); g.computeVertexNormals();
+    skirtMesh = new THREE.Mesh(g, MAT.roadSkirt);
+    skirtMesh.receiveShadow = true; scene.add(skirtMesh);
+  }
+  if (laneVerts.length) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(laneVerts, 3));
+    g.setIndex(laneIdx); g.computeVertexNormals();
+    laneMesh = new THREE.Mesh(g, MAT.lane); scene.add(laneMesh);
+  }
+}
+
+/* ================= A* ================= */
+function aStar(start, goal) {
+  if (start.x === goal.x && start.y === goal.y) return [{ x: start.x, y: start.y }];
+  if (!inBounds(start.x, start.y) || !inBounds(goal.x, goal.y)) return null;
+  if (grid[idx(start.x, start.y)] !== 'road' || grid[idx(goal.x, goal.y)] !== 'road') return null;
+  const k = (x, y) => y * COLS + x;
+  const h = (x, y) => Math.abs(x - goal.x) + Math.abs(y - goal.y);
+  const gScore = new Map(), cameFrom = new Map(), closed = new Set(), open = new Map();
+  const sK = k(start.x, start.y);
+  gScore.set(sK, 0);
+  open.set(sK, { x: start.x, y: start.y, f: h(start.x, start.y) });
+  while (open.size) {
+    let bk = -1, bf = Infinity;
+    for (const [kk, n] of open) if (n.f < bf) { bf = n.f; bk = kk; }
+    const cur = open.get(bk); open.delete(bk);
+    if (cur.x === goal.x && cur.y === goal.y) {
+      const path = []; let ck = bk;
+      while (ck !== undefined) {
+        path.push({ x: ck % COLS, y: Math.floor(ck / COLS) });
+        ck = cameFrom.get(ck);
+      }
+      return path.reverse();
+    }
+    closed.add(bk);
+    const g = gScore.get(bk);
+    for (const [dx, dy] of DIRS) {
+      const nx = cur.x+dx, ny = cur.y+dy;
+      if (!inBounds(nx, ny) || grid[idx(nx, ny)] !== 'road') continue;
+      const nk = k(nx, ny);
+      if (closed.has(nk)) continue;
+      const tg = g + 1;
+      if (tg < (gScore.get(nk) ?? Infinity)) {
+        gScore.set(nk, tg); cameFrom.set(nk, bk);
+        open.set(nk, { x: nx, y: ny, f: tg + h(nx, ny) });
+      }
+    }
+  }
+  return null;
+}
+
+/* ================= Светофоры ================= */
+function createTrafficLightMesh() {
+  const g = new THREE.Group();
+  const pole = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.06, 0.06, 1.8, 8),
+    new THREE.MeshLambertMaterial({ color: 0x222222 })
+  );
+  pole.position.y = 0.9; pole.castShadow = true;
+  g.add(pole);
+  const box = new THREE.Mesh(
+    new THREE.BoxGeometry(0.34, 0.9, 0.2),
+    new THREE.MeshLambertMaterial({ color: 0x111111 })
+  );
+  box.position.y = 2.0; box.castShadow = true;
+  g.add(box);
+  const bulbs = {};
+  const ys = { red: 2.25, yellow: 2.0, green: 1.75 };
+  for (const [name, y] of Object.entries(ys)) {
+    const mat = new THREE.MeshPhongMaterial({
+      color: 0x111111, emissive: 0x000000, emissiveIntensity: 0, shininess: 60,
+    });
+    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.1, 12, 12), mat);
+    bulb.position.set(0, y, 0.11);
+    g.add(bulb);
+    bulbs[name] = bulb;
+  }
+  g.userData.bulbs = bulbs;
+  return g;
+}
+function applyLightColor(mesh, activeColor) {
+  const bulbs = mesh.userData.bulbs;
+  const colors = {
+    red:    { col: 0xff3333, em: 0xff0000 },
+    yellow: { col: 0xffcc33, em: 0xffaa00 },
+    green:  { col: 0x33ff55, em: 0x00ff00 },
+  };
+  for (const name of ['red', 'yellow', 'green']) {
+    const b = bulbs[name];
+    if (name === activeColor) {
+      b.material.color.setHex(colors[name].col);
+      b.material.emissive.setHex(colors[name].em);
+      b.material.emissiveIntensity = 1.2;
+    } else {
+      b.material.color.setHex(0x111111);
+      b.material.emissive.setHex(0x000000);
+      b.material.emissiveIntensity = 0;
+    }
+  }
+}
+function updateCrossingLightVisual(light) {
+  let color;
+  if (light.subphase === 'green') color = 'green';
+  else if (light.subphase === 'yellow') color = 'yellow';
+  else color = 'red';
+  applyLightColor(light.mesh, color);
+}
+function addLight(x, y) {
+  if (lights.has(idx(x, y))) return false;
+  let horiz = 0, vert = 0;
+  for (const [dx, dy] of [[1,0],[-1,0]]) {
+    if (inBounds(x+dx, y+dy) && grid[idx(x+dx, y+dy)] === 'road') horiz++;
+  }
+  for (const [dx, dy] of [[0,1],[0,-1]]) {
+    if (inBounds(x+dx, y+dy) && grid[idx(x+dx, y+dy)] === 'road') vert++;
+  }
+  const isCrossing = horiz >= 1 && vert >= 1;
+  const mesh = createTrafficLightMesh();
+  const p = tileToWorld(x, y);
+  const offX = horiz >= 1 ? 0 : 0.7;
+  const offZ = vert >= 1 ? 0 : 0.7;
+  mesh.position.set(p.x + offX, effectiveHeight(p.x, p.z), p.z + offZ);
+  scene.add(mesh);
+  let light;
+  if (isCrossing) {
+    light = { x, y, isCrossing: true, phase: 'NS', subphase: 'green', timer: LIGHT_DUR.green, mesh };
+    updateCrossingLightVisual(light);
+  } else {
+    const axis = horiz >= 1 ? 'EW' : 'NS';
+    light = { x, y, isCrossing: false, axis, state: 'green', timer: LIGHT_DUR.green, mesh };
+    applyLightColor(mesh, 'green');
+  }
+  lights.set(idx(x, y), light);
+  return true;
+}
+function removeLight(x, y) {
+  const k = idx(x, y);
+  const light = lights.get(k);
+  if (!light) return false;
+  scene.remove(light.mesh);
+  light.mesh.traverse(o => {
+    if (o.geometry) o.geometry.dispose();
+    if (o.material) o.material.dispose();
+  });
+  lights.delete(k);
+  return true;
+}
+function advanceCrossingPhase(light) {
+  if (light.subphase === 'green') {
+    light.subphase = 'yellow'; light.timer = LIGHT_DUR.yellow;
+  } else if (light.subphase === 'yellow') {
+    light.subphase = 'red'; light.timer = LIGHT_DUR.allRed;
+  } else {
+    light.phase = light.phase === 'NS' ? 'EW' : 'NS';
+    light.subphase = 'green'; light.timer = LIGHT_DUR.green;
+  }
+}
+function advanceSimplePhase(light) {
+  if (light.state === 'green') {
+    light.state = 'yellow'; light.timer = LIGHT_DUR.yellow;
+  } else if (light.state === 'yellow') {
+    light.state = 'red'; light.timer = LIGHT_DUR.green + LIGHT_DUR.yellow + LIGHT_DUR.allRed;
+  } else {
+    light.state = 'green'; light.timer = LIGHT_DUR.green;
+  }
+}
+function updateLights(dt) {
+  if (!lights.size) return;
+  const crossingKeys = [];
+  for (const [k, l] of lights) if (l.isCrossing) crossingKeys.push(k);
+  const processed = new Set();
+  for (const k of crossingKeys) {
+    if (processed.has(k)) continue;
+    const cluster = [k]; processed.add(k);
+    const lx = k % COLS, ly = (k / COLS) | 0;
+    for (const k2 of crossingKeys) {
+      if (processed.has(k2)) continue;
+      const l2x = k2 % COLS, l2y = (k2 / COLS) | 0;
+      if (Math.abs(lx - l2x) <= 2 && Math.abs(ly - l2y) <= 2) {
+        cluster.push(k2); processed.add(k2);
+      }
+    }
+    const leader = lights.get(cluster[0]);
+    leader.timer -= dt;
+    if (leader.timer <= 0) advanceCrossingPhase(leader);
+    for (let i = 1; i < cluster.length; i++) {
+      const other = lights.get(cluster[i]);
+      other.phase = leader.phase;
+      other.subphase = leader.subphase;
+      other.timer = leader.timer;
+    }
+  }
+  for (const light of lights.values()) {
+    if (light.isCrossing) continue;
+    light.timer -= dt;
+    if (light.timer <= 0) advanceSimplePhase(light);
+  }
+  for (const light of lights.values()) {
+    if (light.isCrossing) updateCrossingLightVisual(light);
+    else applyLightColor(light.mesh, light.state);
+  }
+}
+function shouldStopAtLight(light, carAxis) {
+  if (light.isCrossing) {
+    if (light.phase !== carAxis) return true;
+    return light.subphase !== 'green';
+  }
+  if (light.axis !== carAxis) return false;
+  return light.state !== 'green';
+}
+function findStopBeforeLight(c, carAxis) {
+  for (let i = c.pathIdx + 1; i < Math.min(c.path.length, c.pathIdx + 5); i++) {
+    const tile = c.path[i];
+    const light = lights.get(idx(tile.x, tile.y));
+    if (!light) continue;
+    if (!shouldStopAtLight(light, carAxis)) continue;
+    const dist = (1 - c.t) * TILE + (i - c.pathIdx - 1) * TILE;
+    return { light, dist };
+  }
+  return null;
+}
+
+/* ================= Трафик ================= */
+const CAR_COLORS = [0xf2c14e, 0xe4572e, 0x76b5c5, 0xe8e8e8];
+
+function roadTiles() {
+  const r = [];
+  for (let y = 0; y < ROWS; y++)
+    for (let x = 0; x < COLS; x++)
+      if (grid[idx(x, y)] === 'road') r.push({ x, y });
+  return r;
+}
+function randomRoadTile() {
+  const r = roadTiles();
+  return r.length ? r[(Math.random() * r.length) | 0] : null;
+}
+
+function createCarMesh(color) {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(CAR_WIDTH, TILE*0.18, CAR_LENGTH),
+    new THREE.MeshLambertMaterial({ color })
+  );
+  body.position.y = TILE*0.09; body.castShadow = true;
+  g.add(body);
+  const cabin = new THREE.Mesh(
+    new THREE.BoxGeometry(CAR_WIDTH * 0.8, TILE*0.12, CAR_LENGTH * 0.55),
+    new THREE.MeshLambertMaterial({ color: 0x222222 })
+  );
+  cabin.position.y = TILE*0.18; g.add(cabin);
+  g.rotation.order = 'YXZ';
+  return g;
+}
+
+function computeCarPose(c) {
+  const a = c.path[c.pathIdx];
+  const b = c.path[c.pathIdx + 1] || a;
+  const wa = tileToWorld(a.x, a.y), wb = tileToWorld(b.x, b.y);
+  let dinX, dinZ;
+  if (c.pathIdx > 0) {
+    const wp = tileToWorld(c.path[c.pathIdx - 1].x, c.path[c.pathIdx - 1].y);
+    dinX = wa.x - wp.x; dinZ = wa.z - wp.z;
+  } else { dinX = wb.x - wa.x; dinZ = wb.z - wa.z; }
+  let doutX, doutZ;
+  if (c.pathIdx + 2 < c.path.length) {
+    const wn = tileToWorld(c.path[c.pathIdx + 2].x, c.path[c.pathIdx + 2].y);
+    doutX = wn.x - wb.x; doutZ = wn.z - wb.z;
+  } else { doutX = wb.x - wa.x; doutZ = wb.z - wa.z; }
+  const inLen = Math.hypot(dinX, dinZ) || 1;
+  const outLen = Math.hypot(doutX, doutZ) || 1;
+  const rinX = -dinZ / inLen, rinZ = dinX / inLen;
+  const routX = -doutZ / outLen, routZ = doutX / outLen;
+  const laneAX = wa.x + rinX * LANE_OFFSET;
+  const laneAZ = wa.z + rinZ * LANE_OFFSET;
+  const laneBX = wb.x + routX * LANE_OFFSET;
+  const laneBZ = wb.z + routZ * LANE_OFFSET;
+  const x = laneAX + (laneBX - laneAX) * c.t;
+  const z = laneAZ + (laneBZ - laneAZ) * c.t;
+  const dx = laneBX - laneAX, dz = laneBZ - laneAZ;
+  const len = Math.hypot(dx, dz) || 1;
+  return { x, z, dx: dx / len, dz: dz / len };
+}
+
+function updateCarMeshPose(c) {
+  const pose = computeCarPose(c);
+  const a = c.path[c.pathIdx];
+  const b = c.path[c.pathIdx + 1] || a;
+  const wa = tileToWorld(a.x, a.y), wb = tileToWorld(b.x, b.y);
+  const ya = effectiveHeight(wa.x, wa.z);
+  const yb = effectiveHeight(wb.x, wb.z);
+  const y = 0.12 + ya + (yb - ya) * c.t;
+  c.mesh.position.set(pose.x, y, pose.z);
+  c.mesh.rotation.y = Math.atan2(pose.dx, pose.dz);
+  const horiz = Math.hypot(wb.x - wa.x, wb.z - wa.z) || 1;
+  c.mesh.rotation.x = -Math.atan2(yb - ya, horiz);
+}
+
+function isPositionFree(x, z, excludeCar) {
+  for (const c of cars) {
+    if (c === excludeCar) continue;
+    const cp = computeCarPose(c);
+    if (Math.hypot(cp.x - x, cp.z - z) < CAR_LENGTH * 1.5) return false;
+  }
+  return true;
+}
+
+function spawnCar() {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const start = randomRoadTile();
+    if (!start) return null;
+    const startPose = tileToWorld(start.x, start.y);
+    if (!isPositionFree(startPose.x, startPose.z, null)) continue;
+    let best = null;
+    for (let i = 0; i < 5; i++) {
+      const end = randomRoadTile();
+      if (!end || (end.x === start.x && end.y === start.y)) continue;
+      const path = aStar(start, end);
+      if (path && (!best || path.length > best.length)) best = path;
+    }
+    if (!best || best.length < 3) continue;
+    const mesh = createCarMesh(CAR_COLORS[(Math.random()*CAR_COLORS.length)|0]);
+    scene.add(mesh);
+    return {
+      path: best, pathIdx: 0, t: 0, mesh,
+      speed: 0,
+      desiredSpeed: 1.2 + Math.random() * 0.5,
+    };
+  }
+  return null;
+}
+
+function assignNewJourney(c) {
+  const cur = c.path[c.path.length - 1];
+  const curPose = tileToWorld(cur.x, cur.y);
+  if (!isPositionFree(curPose.x, curPose.z, c)) return false;
+  let best = null;
+  for (let i = 0; i < 5; i++) {
+    const end = randomRoadTile();
+    if (!end || (end.x === cur.x && end.y === cur.y)) continue;
+    const path = aStar(cur, end);
+    if (path && (!best || path.length > best.length)) best = path;
+  }
+  if (!best || best.length < 3) return false;
+  c.path = best; c.pathIdx = 0; c.t = 0; c.speed = 0;
+  return true;
+}
+
+function disposeCar(c) {
+  scene.remove(c.mesh);
+  c.mesh.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+}
+
+function maintainCars() {
+  cars = cars.filter(c => {
+    if (!c.path || c.path.length < 2 ||
+        !c.path.every(t => grid[idx(t.x, t.y)] === 'road')) {
+      disposeCar(c); return false;
+    }
+    return true;
+  });
+  const target = Math.min(MAX_CARS, Math.floor(roadTiles().length / ROADS_PER_CAR));
+  while (cars.length < target) {
+    const car = spawnCar();
+    if (!car) break;
+    cars.push(car);
+  }
+}
+
+function updateCars(dt) {
+  if (!cars.length) return;
+  const poses = cars.map(c => computeCarPose(c));
+
+  for (let i = cars.length - 1; i >= 0; i--) {
+    const c = cars[i];
+    const pose = poses[i];
+    const carAxis = Math.abs(pose.dx) > Math.abs(pose.dz) ? 'EW' : 'NS';
+
+    let bestLead = null;
+    for (let j = 0; j < cars.length; j++) {
+      if (i === j) continue;
+      const o = poses[j];
+      const rx = o.x - pose.x, rz = o.z - pose.z;
+      const along = rx * pose.dx + rz * pose.dz;
+      const perp = Math.abs(rx * pose.dz - rz * pose.dx);
+      if (along > 0.05 && perp < 0.55 && along < 20) {
+        const gap = along - CAR_LENGTH;
+        if (gap > 0 && (!bestLead || gap < bestLead.gap)) {
+          bestLead = { gap, speed: cars[j].speed };
+        }
+      }
+    }
+    const stopLight = findStopBeforeLight(c, carAxis);
+    let leadGap = Infinity, leadSpeed = 0;
+    if (bestLead && bestLead.gap < leadGap) {
+      leadGap = bestLead.gap; leadSpeed = bestLead.speed;
+    }
+    if (stopLight) {
+      const lightGap = stopLight.dist - CAR_LENGTH / 2 - 0.3;
+      if (lightGap < leadGap) { leadGap = lightGap; leadSpeed = 0; }
+    }
+    let v0 = c.desiredSpeed;
+    if (c.pathIdx + 2 < c.path.length) {
+      const A = c.path[c.pathIdx], B = c.path[c.pathIdx + 1], N = c.path[c.pathIdx + 2];
+      const d1x = B.x - A.x, d1z = B.y - A.y;
+      const d2x = N.x - B.x, d2z = N.y - B.y;
+      if (d1x * d2x + d1z * d2z === 0) v0 *= 0.5;
+    }
+    const v = c.speed;
+    const freeAccel = 1 - Math.pow(v / v0, IDM.DELTA);
+    let interAccel = 0;
+    if (leadGap < Infinity) {
+      const dv = v - leadSpeed;
+      const sStar = IDM.S0 + Math.max(0, v * IDM.T_REACT + (v * dv) / (2 * Math.sqrt(IDM.A_MAX * IDM.B_COMF)));
+      interAccel = Math.pow(sStar / Math.max(leadGap, 0.1), 2);
+    }
+    const accel = IDM.A_MAX * (freeAccel - interAccel);
+    c.speed = Math.max(0, Math.min(v0 * 1.3, v + accel * dt));
+
+    c.t += (c.speed * dt) / TILE;
+    while (c.t >= 1 && c.pathIdx < c.path.length - 1) { c.t -= 1; c.pathIdx++; }
+    if (c.pathIdx >= c.path.length - 1) {
+      trips++;
+      if (!assignNewJourney(c)) { disposeCar(c); cars.splice(i, 1); continue; }
+    }
+    updateCarMeshPose(c);
+  }
+}
+
+/* ================= Пешеходы ================= */
+function createPedestrianMesh(color) {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(0.18, 0.5, 0.18),
+    new THREE.MeshLambertMaterial({ color })
+  );
+  body.position.y = 0.25;
+  body.castShadow = true;
+  g.add(body);
+  const head = new THREE.Mesh(
+    new THREE.SphereGeometry(0.11, 8, 8),
+    new THREE.MeshLambertMaterial({ color: 0xffccaa })
+  );
+  head.position.y = 0.6;
+  head.castShadow = true;
+  g.add(head);
+  return g;
+}
+
+function buildingsWithAccess() {
+  const list = [];
+  for (let y = 0; y < ROWS; y++)
+    for (let x = 0; x < COLS; x++) {
+      const t = grid[idx(x, y)];
+      if ((isHouse(t) || t === 'school') && hasRoadAccess(x, y)) {
+        list.push({ x, y, type: t });
+      }
+    }
+  return list;
+}
+
+function buildingRoadTile(b) {
+  for (const [dx, dy] of DIRS) {
+    const nx = b.x + dx, ny = b.y + dy;
+    if (inBounds(nx, ny) && grid[idx(nx, ny)] === 'road') return { x: nx, y: ny };
+  }
+  return null;
+}
+
+function spawnPedestrian() {
+  const bldgs = buildingsWithAccess();
+  if (bldgs.length < 2) return null;
+
+  const from = bldgs[(Math.random() * bldgs.length) | 0];
+  const fromRoad = buildingRoadTile(from);
+  if (!fromRoad) return null;
+
+  for (let i = 0; i < 6; i++) {
+    const to = bldgs[(Math.random() * bldgs.length) | 0];
+    if (to.x === from.x && to.y === from.y) continue;
+    const toRoad = buildingRoadTile(to);
+    if (!toRoad) continue;
+    if (toRoad.x === fromRoad.x && toRoad.y === fromRoad.y) continue;
+    const path = aStar(fromRoad, toRoad);
+    if (!path || path.length < 2) continue;
+
+    const mesh = createPedestrianMesh(PED_COLORS[(Math.random()*PED_COLORS.length)|0]);
+    const startPos = tileToWorld(from.x, from.y);
+    mesh.position.set(startPos.x, effectiveHeight(startPos.x, startPos.z) + 0.04, startPos.z);
+    scene.add(mesh);
+
+    return {
+      path, pathIdx: 0, t: 0, mesh,
+      speed: PEDESTRIAN_SPEED * (0.85 + Math.random() * 0.3),
+      phase: 'exiting',
+      fromBuilding: from,
+      toBuilding: to,
+      walkPhase: Math.random() * Math.PI * 2,
+    };
+  }
+  return null;
+}
+
+function disposePedestrian(p) {
+  scene.remove(p.mesh);
+  p.mesh.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+}
+
+function computePedestrianPose(p) {
+  if (p.phase === 'exiting') {
+    const a = tileToWorld(p.fromBuilding.x, p.fromBuilding.y);
+    const b = tileToWorld(p.path[0].x, p.path[0].y);
+    const x = a.x + (b.x - a.x) * p.t;
+    const z = a.z + (b.z - a.z) * p.t;
+    const dx = b.x - a.x, dz = b.z - a.z;
+    const len = Math.hypot(dx, dz) || 1;
+    return { x, z, dx: dx/len, dz: dz/len };
+  }
+  if (p.phase === 'walking') {
+    const a = p.path[p.pathIdx];
+    const b = p.path[p.pathIdx + 1] || a;
+    const wa = tileToWorld(a.x, a.y), wb = tileToWorld(b.x, b.y);
+    let dinX, dinZ;
+    if (p.pathIdx > 0) {
+      const wp = tileToWorld(p.path[p.pathIdx - 1].x, p.path[p.pathIdx - 1].y);
+      dinX = wa.x - wp.x; dinZ = wa.z - wp.z;
+    } else { dinX = wb.x - wa.x; dinZ = wb.z - wa.z; }
+    let doutX, doutZ;
+    if (p.pathIdx + 2 < p.path.length) {
+      const wn = tileToWorld(p.path[p.pathIdx + 2].x, p.path[p.pathIdx + 2].y);
+      doutX = wn.x - wb.x; doutZ = wn.z - wb.z;
+    } else { doutX = wb.x - wa.x; doutZ = wb.z - wa.z; }
+    const inLen = Math.hypot(dinX, dinZ) || 1;
+    const outLen = Math.hypot(doutX, doutZ) || 1;
+    const rinX = -dinZ / inLen, rinZ = dinX / inLen;
+    const routX = -doutZ / outLen, routZ = doutX / outLen;
+    const laneAX = wa.x + rinX * SIDEWALK_OFFSET;
+    const laneAZ = wa.z + rinZ * SIDEWALK_OFFSET;
+    const laneBX = wb.x + routX * SIDEWALK_OFFSET;
+    const laneBZ = wb.z + routZ * SIDEWALK_OFFSET;
+    const x = laneAX + (laneBX - laneAX) * p.t;
+    const z = laneAZ + (laneBZ - laneAZ) * p.t;
+    const dx = laneBX - laneAX, dz = laneBZ - laneAZ;
+    const len = Math.hypot(dx, dz) || 1;
+    return { x, z, dx: dx/len, dz: dz/len };
+  }
+  if (p.phase === 'entering') {
+    const last = p.path[p.path.length - 1];
+    const a = tileToWorld(last.x, last.y);
+    const b = tileToWorld(p.toBuilding.x, p.toBuilding.y);
+    const x = a.x + (b.x - a.x) * p.t;
+    const z = a.z + (b.z - a.z) * p.t;
+    const dx = b.x - a.x, dz = b.z - a.z;
+    const len = Math.hypot(dx, dz) || 1;
+    return { x, z, dx: dx/len, dz: dz/len };
+  }
+  return { x: 0, z: 0, dx: 0, dz: 1 };
+}
+
+function updatePedestrians(dt, now) {
+  const tSec = now * 0.001;
+  for (let i = pedestrians.length - 1; i >= 0; i--) {
+    const p = pedestrians[i];
+    if (!p) continue;
+
+    if (p.phase === 'walking') {
+      const invalid = !p.path.every(t => grid[idx(t.x, t.y)] === 'road');
+      if (invalid) { disposePedestrian(p); pedestrians.splice(i, 1); continue; }
+    }
+
+    p.t += p.speed * dt / TILE;
+    let disposed = false;
+    while (p.t >= 1) {
+      if (p.phase === 'exiting') {
+        p.phase = 'walking';
+        p.pathIdx = 0;
+        p.t -= 1;
+      } else if (p.phase === 'walking') {
+        if (p.pathIdx < p.path.length - 1) {
+          p.pathIdx++;
+          p.t -= 1;
+        } else {
+          p.phase = 'entering';
+          p.t -= 1;
+        }
+      } else {
+        disposePedestrian(p);
+        pedestrians.splice(i, 1);
+        disposed = true;
+        break;
+      }
+    }
+    if (disposed) continue;
+
+    const pose = computePedestrianPose(p);
+    const y = effectiveHeight(pose.x, pose.z);
+    const bob = Math.sin(tSec * 8 + p.walkPhase) * 0.03;
+    p.mesh.position.set(pose.x, 0.04 + y + bob, pose.z);
+    p.mesh.rotation.y = Math.atan2(pose.dx, pose.dz);
+  }
+}
+
+function maintainPedestrians(dt) {
+  pedestrians = pedestrians.filter(p => {
+    if (p.phase === 'walking' &&
+        !p.path.every(t => grid[idx(t.x, t.y)] === 'road')) {
+      disposePedestrian(p); return false;
+    }
+    return true;
+  });
+
+  if (pedestrians.length >= MAX_PEDESTRIANS) return;
+  pedSpawnAcc += dt;
+  if (pedSpawnAcc >= PED_SPAWN_INTERVAL) {
+    pedSpawnAcc = 0;
+    if (Math.random() < 0.85) {
+      const ped = spawnPedestrian();
+      if (ped) pedestrians.push(ped);
+    }
+  }
+}
+
+/* ================= Превью / pending ================= */
+function computeLineTiles(a, b) {
+  const out = [];
+  if (a.x === b.x && a.y === b.y) return [{ x: a.x, y: a.y }];
+  const dx = b.x - a.x, dy = b.y - a.y;
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    for (let x = a.x; x !== b.x; x += Math.sign(dx)) out.push({ x, y: a.y });
+    out.push({ x: b.x, y: a.y });
+    for (let y = a.y; y !== b.y; y += Math.sign(dy)) out.push({ x: b.x, y });
+  } else {
+    for (let y = a.y; y !== b.y; y += Math.sign(dy)) out.push({ x: a.x, y });
+    out.push({ x: a.x, y: b.y });
+    for (let x = a.x; x !== b.x; x += Math.sign(dx)) out.push({ x, y: b.y });
+  }
+  return out;
+}
+function computeRoadLine(a, b) {
+  const raw = computeLineTiles(a, b);
+  const out = [];
+  for (const t of raw) {
+    const cur = grid[idx(t.x, t.y)];
+    if (cur && cur !== 'road') break;
+    out.push(t);
+  }
+  return out.length ? out : [{ x: a.x, y: a.y }];
+}
+function rebuildPreview() {
+  if (previewGroup) {
+    scene.remove(previewGroup);
+    previewGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+    previewGroup = null;
+  }
+  if (!previewTiles.length) return;
+  previewGroup = new THREE.Group();
+  const mat = new THREE.MeshBasicMaterial({ color: 0x5fd08a, transparent: true, opacity: 0.5, depthWrite: false });
+  for (const t of previewTiles) {
+    const p = tileToWorld(t.x, t.y);
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(TILE * 0.95, TILE * 0.95), mat);
+    m.rotation.x = -Math.PI / 2;
+    m.position.set(p.x, effectiveHeight(p.x, p.z) + 0.1, p.z);
+    previewGroup.add(m);
+  }
+  scene.add(previewGroup);
+}
+function clearPreview() {
+  if (previewGroup) {
+    scene.remove(previewGroup);
+    previewGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+    previewGroup = null;
+  }
+  previewTiles = [];
+}
+
+/* ================= Ценник ================= */
+const priceTagEl = document.getElementById('priceTag');
+const priceTagInner = document.getElementById('priceTagInner');
+let lastPriceText = null;
+let lastPulseTime = 0;
+function showPriceTag(cx, cy, text, cls) {
+  const changed = lastPriceText !== text;
+  priceTagInner.textContent = text;
+  lastPriceText = text;
+  priceTagEl.className = cls || '';
+  if (changed) {
+    const now = performance.now();
+    if (now - lastPulseTime >= PULSE_THROTTLE_MS) {
+      lastPulseTime = now;
+      priceTagInner.classList.remove('pulse');
+      void priceTagInner.offsetWidth;
+      priceTagInner.classList.add('pulse');
+    }
+  }
+  priceTagEl.style.display = 'block';
+  positionPriceTag(cx, cy);
+}
+function hidePriceTag() { priceTagEl.style.display = 'none'; }
+function positionPriceTag(cx, cy) {
+  const b = priceTagEl.getBoundingClientRect();
+  let left = cx + 16, top = cy + 16;
+  if (left + b.width > innerWidth - 8) left = cx - b.width - 16;
+  if (top + b.height > innerHeight - 8) top = cy - b.height - 16;
+  if (left < 8) left = 8;
+  if (top < 8) top = 8;
+  priceTagEl.style.transform = `translate(${left}px, ${top}px)`;
+}
+function updatePriceTagForState(cx, cy) {
+  if (pending || !hover) { hidePriceTag(); return; }
+  const i = idx(hover.x, hover.y);
+  if (tool === 'bulldoze') {
+    let refund = 0;
+    if (lights.has(i)) refund += Math.floor(COST.trafficlight * 0.5);
+    const cur = grid[i];
+    if (cur) {
+      const price = isHouse(cur) ? HOUSE_TYPES[cur].price : COST[cur];
+      refund += Math.floor(price * 0.5);
+    }
+    if (refund === 0) { hidePriceTag(); return; }
+    showPriceTag(cx, cy, '+' + refund + ' ₡', 'income');
+    return;
+  }
+  if (tool === 'trafficlight') {
+    if (grid[i] !== 'road' || lights.has(i)) { hidePriceTag(); return; }
+    showPriceTag(cx, cy, COST.trafficlight + ' ₡', money < COST.trafficlight ? 'negative' : '');
+    return;
+  }
+  if (tool === 'road') {
+    const tiles = dragging ? previewTiles : [hover];
+    if (!tiles.length) { hidePriceTag(); return; }
+    const newTiles = tiles.filter(t => !grid[idx(t.x, t.y)]);
+    if (!dragging && !newTiles.length) { hidePriceTag(); return; }
+    const cost = newTiles.length * COST.road;
+    showPriceTag(cx, cy, cost + ' ₡', cost === 0 ? 'zero' : (money < cost ? 'negative' : ''));
+    return;
+  }
+  if (tool === 'house') {
+    if (grid[i]) { hidePriceTag(); return; }
+    const cost = HOUSE_TYPES[currentHouseType].price;
+    showPriceTag(cx, cy, cost + ' ₡', money < cost ? 'negative' : '');
+    return;
+  }
+  if (tool === 'school') {
+    if (grid[i]) { hidePriceTag(); return; }
+    const cost = COST.school;
+    showPriceTag(cx, cy, cost + ' ₡', money < cost ? 'negative' : '');
+    return;
+  }
+  hidePriceTag();
+}
+
+/* ================= Модалка ================= */
+const confirmEl = document.getElementById('confirm');
+const confirmTitleEl = document.getElementById('confirm-title');
+const confirmCostEl = document.getElementById('confirm-cost');
+const confirmOkBtn = document.getElementById('confirm-ok');
+const confirmNoBtn = document.getElementById('confirm-no');
+function pluralRu(n, one, few, many) {
+  const m10 = n % 10, m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return few;
+  return many;
+}
+function showConfirm() {
+  if (!pending) return;
+  hidePriceTag();
+  let title = '';
+  if (pending.tool === 'road') title = 'Дорога';
+  else if (pending.tool === 'trafficlight') title = 'Светофор';
+  else if (pending.tool === 'school') title = 'Школа';
+  else if (isHouse(pending.tool)) title = HOUSE_TYPES[pending.tool].name;
+
+  confirmTitleEl.textContent = title;
+  const cnt = pending.newTiles.length;
+  if (pending.tool === 'trafficlight') {
+    confirmCostEl.innerHTML = `${pending.cost} ₡`;
+  } else if (isHouse(pending.tool) || pending.tool === 'school') {
+    confirmCostEl.innerHTML = `${pending.cost} ₡`;
+  } else {
+    confirmCostEl.innerHTML = `${pending.cost} ₡ <span>(${cnt} ${pluralRu(cnt, 'тайл', 'тайла', 'тайлов')})</span>`;
+  }
+  confirmEl.style.display = 'block';
+  updateConfirmPosition();
+}
+function updateConfirmPosition() {
+  if (!pending) return;
+  const a = pending.tiles[pending.tiles.length - 1];
+  const p = tileToWorld(a.x, a.y);
+  const v = new THREE.Vector3(p.x, effectiveHeight(p.x, p.z) + 1.6, p.z).project(camera);
+  const sx = (v.x * 0.5 + 0.5) * innerWidth;
+  const sy = (-v.y * 0.5 + 0.5) * innerHeight;
+  const b = confirmEl.getBoundingClientRect();
+  let left = sx + 22, top = sy - 10;
+  if (left + b.width > innerWidth - 12) left = sx - b.width - 22;
+  if (top + b.height > innerHeight - 12) top = innerHeight - b.height - 12;
+  if (top < 12) top = 12;
+  confirmEl.style.left = left + 'px';
+  confirmEl.style.top = top + 'px';
+}
+function cancelPending() {
+  pending = null;
+  confirmEl.style.display = 'none';
+  clearPreview();
+}
+function commitPending() {
+  if (!pending) return;
+  if (money < pending.cost) { log('Недостаточно средств'); cancelPending(); return; }
+  money -= pending.cost;
+  
+  if (pending.tool === 'trafficlight') {
+    for (const t of pending.newTiles) addLight(t.x, t.y);
+    cancelPending();
+    updateHUD();
+    return;
+  }
+
+  let roadChanged = false;
+  for (const t of pending.newTiles) {
+    grid[idx(t.x, t.y)] = pending.tool; // Сохраняем ID дома (house1, house2)
+    if (pending.tool === 'road') roadChanged = true;
+    else {
+      buildBuildingMesh(pending.tool, t.x, t.y);
+      if (!hasRoadAccess(t.x, t.y)) {
+        log(`${isHouse(pending.tool) ? 'Дом' : 'Школа'} без дороги — не приносит налог`);
+      }
+    }
+  }
+  cancelPending();
+  if (roadChanged) {
+    buildRoadTargets();
+    rebuildRoads();
+    rebuildGround();
+    rebuildGridLines();
+    updateBuildingHeights();
+    updateBuildingRoadStatus();
+    roadDirty = false;
+  }
+  updateHUD();
+}
+confirmOkBtn.addEventListener('click', () => commitPending());
+confirmNoBtn.addEventListener('click', () => cancelPending());
+
+/* ================= Bulldoze ================= */
+function doBulldoze(x, y) {
+  const i = idx(x, y);
+  const cur = grid[i];
+  let refund = 0;
+  if (removeLight(x, y)) refund += Math.floor(COST.trafficlight * 0.5);
+  if (!cur) {
+    if (refund > 0) { money += refund; updateHUD(); }
+    return;
+  }
+  const price = isHouse(cur) ? HOUSE_TYPES[cur].price : COST[cur];
+  money += Math.floor(price * 0.5) + refund;
+  grid[i] = null;
+  if (cur === 'road') roadDirty = true;
+  else removeTileMesh(x, y);
+  updateHUD();
+}
+
+/* ================= Экономика ================= */
+function economyTick() {
+  let inc = 0, upkeep = 0;
+  const houses = [], schools = [];
+  for (let y = 0; y < ROWS; y++)
+    for (let x = 0; x < COLS; x++) {
+      const t = grid[idx(x, y)];
+      if (isHouse(t)) houses.push({ x, y, acc: hasRoadAccess(x, y), type: t });
+      if (t === 'school') schools.push({ x, y, acc: hasRoadAccess(x, y) });
+    }
+  
+  for (const h of houses) {
+    if (h.acc) inc += HOUSE_TYPES[h.type].income;
+  }
+
+  for (const s of schools) {
+    if (!s.acc) continue;
+    upkeep += 6;
+    for (const h of houses)
+      if (h.acc && Math.abs(h.x-s.x) <= 2 && Math.abs(h.y-s.y) <= 2) inc += 3;
+  }
+  income = inc - upkeep; money += income;
+  updateHUD();
+}
+
+/* ================= Пикинг ================= */
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+const pickPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const pickPoint = new THREE.Vector3();
+function pickTile(clientX, clientY) {
+  const r = renderer.domElement.getBoundingClientRect();
+  pointer.x = ((clientX - r.left) / r.width) * 2 - 1;
+  pointer.y = -((clientY - r.top) / r.height) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+  let yPlane = 0;
+  for (let i = 0; i < 4; i++) {
+    pickPlane.constant = -yPlane;
+    if (!raycaster.ray.intersectPlane(pickPlane, pickPoint)) return null;
+    yPlane = effectiveHeight(pickPoint.x, pickPoint.z);
+  }
+  return worldToTile(pickPoint);
+}
+function moveHighlight(tile) {
+  if (!tile) { highlight.visible = false; return; }
+  const p = tileToWorld(tile.x, tile.y);
+  highlight.position.set(p.x, effectiveHeight(p.x, p.z) + 0.09, p.z);
+  highlight.visible = true;
+}
+
+/* ================= Ввод ================= */
+renderer.domElement.addEventListener('pointerdown', e => {
+  if (e.button !== 0) return;
+  if (pending) { cancelPending(); return; }
+  const t = pickTile(e.clientX, e.clientY);
+  if (!t) return;
+  
+  if (tool === 'bulldoze') { doBulldoze(t.x, t.y); return; }
+
+  if (tool === 'trafficlight') {
+    if (grid[idx(t.x, t.y)] !== 'road') { log('Светофор только на дороге'); return; }
+    if (lights.has(idx(t.x, t.y))) { log('Светофор уже стоит'); return; }
+    if (money < COST.trafficlight) { log('Не хватает на светофор'); return; }
+    pending = { tool: 'trafficlight', tiles: [t], newTiles: [t], cost: COST.trafficlight };
+    showConfirm();
+    return;
+  }
+
+  const existing = grid[idx(t.x, t.y)];
+  if (tool !== 'road' && existing) return;
+  if (tool === 'road' && existing && existing !== 'road') return;
+
+  dragging = true;
+  previewStart = t;
+  previewTiles = [t];
+  rebuildPreview();
+  updatePriceTagForState(e.clientX, e.clientY);
+});
+
+renderer.domElement.addEventListener('pointermove', e => {
+  const t = pickTile(e.clientX, e.clientY);
+  hover = t;
+  moveHighlight(t);
+  if (dragging && previewStart && tool === 'road' && t) {
+    previewTiles = computeRoadLine(previewStart, t);
+    rebuildPreview();
+  }
+  updatePriceTagForState(e.clientX, e.clientY);
+});
+
+window.addEventListener('pointerup', () => {
+  if (!dragging) return;
+  dragging = false;
+  hidePriceTag();
+  if (!previewStart) return;
+  const start = previewStart;
+  previewStart = null;
+
+  if (tool === 'road') {
+    const newTiles = previewTiles.filter(t => !grid[idx(t.x, t.y)]);
+    if (!newTiles.length) { clearPreview(); return; }
+    pending = { tool: 'road', tiles: previewTiles.slice(), newTiles, cost: newTiles.length * COST.road };
+  } else if (tool === 'house') {
+    if (grid[idx(start.x, start.y)]) { clearPreview(); return; }
+    const cost = HOUSE_TYPES[currentHouseType].price;
+    pending = { tool: currentHouseType, tiles: [start], newTiles: [start], cost };
+  } else if (tool === 'school') {
+    if (grid[idx(start.x, start.y)]) { clearPreview(); return; }
+    pending = { tool: 'school', tiles: [start], newTiles: [start], cost: COST.school };
+  } else { clearPreview(); return; }
+  
+  showConfirm();
+});
+
+renderer.domElement.addEventListener('pointerleave', () => {
+  highlight.visible = false;
+  hidePriceTag();
+});
+
+window.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { if (pending) cancelPending(); return; }
+  const i = parseInt(e.key, 10) - 1;
+  if (i >= 0 && i < TOOLS.length) selectTool(TOOLS[i].id);
+});
+
+/* ================= UI ================= */
+const moneyEl = document.getElementById('money');
+const incomeEl = document.getElementById('income');
+const tripsEl = document.getElementById('trips');
+const carsEl = document.getElementById('cars');
+const pedsEl = document.getElementById('peds');
+const logEl = document.getElementById('log');
+const toolsEl = document.getElementById('tools');
+const houseMenuEl = document.getElementById('houseMenu');
+
+// Генерация кнопок меню выбора домов
+Object.values(HOUSE_TYPES).forEach(h => {
+  const btn = document.createElement('button');
+  btn.dataset.houseId = h.id;
+  btn.innerHTML = `
+    <img src="${h.id}.png" alt="${h.name}">
+    <div class="house-info">
+      <span class="house-name">${h.name}</span>
+      <span class="house-price">${h.price} ₡</span>
+    </div>
+  `;
+  btn.onclick = () => {
+    currentHouseType = h.id;
+    updateHouseMenuActive();
+  };
+  houseMenuEl.appendChild(btn);
+});
+
+function updateHouseMenuActive() {
+  [...houseMenuEl.children].forEach(b => {
+    b.classList.toggle('active', b.dataset.houseId === currentHouseType);
+  });
+}
+
+function updateHUD() {
+  moneyEl.textContent = Math.round(money) + ' ₡';
+  moneyEl.style.color = money < 0 ? '#ff6b6b' : '#e8f0ea';
+  incomeEl.textContent = (income >= 0 ? '+' : '') + income + ' ₡';
+  incomeEl.style.color = income > 0 ? '#5fd08a' : income < 0 ? '#ff6b6b' : '#e8f0ea';
+  tripsEl.textContent = trips;
+  carsEl.textContent = cars.length;
+  if (pedsEl) pedsEl.textContent = pedestrians.length;
+}
+function log(msg) {
+  const l = document.createElement('div');
+  l.textContent = msg;
+  logEl.prepend(l);
+  while (logEl.children.length > 4) logEl.lastChild.remove();
+}
+
+function selectTool(id) {
+  if (pending) cancelPending();
+  tool = id;
+  
+  [...toolsEl.children].forEach(b => b.classList.toggle('active', b.dataset.tool === id));
+  
+  // Показываем/скрываем подменю выбора дома
+  if (tool === 'house') {
+    houseMenuEl.style.display = 'flex';
+  } else {
+    houseMenuEl.style.display = 'none';
+  }
+  
+  hidePriceTag();
+}
+
+TOOLS.forEach(t => {
+  const b = document.createElement('button');
+  b.textContent = t.name + (t.cost ? ` — ${t.cost} ₡` : '');
+  b.dataset.tool = t.id;
+  b.onclick = () => selectTool(t.id);
+  toolsEl.appendChild(b);
+});
+
+updateHouseMenuActive();
+selectTool('road');
+
+/* ================= Старт ================= */
+for (let x = 3; x <= 12; x++) grid[idx(x, 7)] = 'road';
+for (let y = 4; y <= 10; y++) grid[idx(8, y)] = 'road';
+// Добавим по одному дому каждого типа
+grid[idx(6, 6)]  = 'house1';
+grid[idx(9, 6)]  = 'house2';
+grid[idx(11, 8)] = 'house1';
+grid[idx(5, 8)]  = 'house2';
+grid[idx(8, 9)]  = 'school';
+
+buildRoadTargets();
+rebuildRoads();
+rebuildGround();
+rebuildGridLines();
+for (let y = 0; y < ROWS; y++)
+  for (let x = 0; x < COLS; x++) {
+    const t = grid[idx(x, y)];
+    if (isHouse(t) || t === 'school') buildBuildingMesh(t, x, y);
+  }
+addLight(8, 7);
+updateHUD();
+
+/* ================= Resize / loop ================= */
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+
+  if (roadDirty) {
+    buildRoadTargets();
+    rebuildRoads();
+    rebuildGround();
+    rebuildGridLines();
+    updateBuildingHeights();
+    updateBuildingRoadStatus();
+    roadDirty = false;
+  }
+
+  controls.update();
+  if (pending) updateConfirmPosition();
+
+  const tSec = now * 0.001;
+  for (const group of tileMeshes.values()) {
+    const cross = group.userData.cross;
+    if (!cross) continue;
+    const phase = cross.userData.bobPhase;
+    cross.position.y = cross.userData.baseY + Math.sin(tSec * 3 + phase) * 0.18;
+    const bodyMat = group.userData.bodyMat;
+    if (bodyMat) bodyMat.emissiveIntensity = 0.4 + 0.25 * (0.5 + 0.5 * Math.sin(tSec * 3 + phase));
+    const roofMat = group.userData.roofMat;
+    if (roofMat) roofMat.emissiveIntensity = 0.35 + 0.2 * (0.5 + 0.5 * Math.sin(tSec * 3 + phase));
+  }
+
+  updateLights(dt);
+  updateCars(dt);
+  maintainPedestrians(dt);
+  updatePedestrians(dt, now);
+
+  tickAcc += dt;
+  if (tickAcc >= 2) { tickAcc -= 2; economyTick(); }
+  carAcc += dt;
+  if (carAcc >= 0.5) { carAcc = 0; maintainCars(); }
+  carsEl.textContent = cars.length;
+  if (pedsEl) pedsEl.textContent = pedestrians.length;
+  renderer.render(scene, camera);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
